@@ -1,0 +1,21 @@
+[project]
+name = "amd-slingshot-hackathon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10.11"
+dependencies = [
+    "fastapi>=0.129.0",
+    "fastmcp>=2.14.5",
+    "langchain>=1.2.10",
+    "langgraph>=1.0.8",
+    "mcp[cli]>=1.26.0",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "pytest>=9.0.2",
+    "python-dotenv>=1.2.1",
+    "sqlalchemy>=2.0.46",
+    "stable-baselines3>=2.7.1",
+    "uvicorn>=0.40.0",
+]
