@@ -24,7 +24,8 @@ class ProjectEnv:
     Reward: Composite function balancing completion, delay, overload, throughput, deadlines
     """
     
-    def __init__(self, num_workers: int = None, num_tasks: int = None, seed: int = None):
+    def __init__(self, num_workers: int = None, num_tasks: int = None, seed: int = None,
+                 enable_diagnostics: bool = False, reward_scale: float = 0.1):
         """
         Initialize project management environment
         
@@ -32,12 +33,26 @@ class ProjectEnv:
             num_workers: Number of workers (default from config)
             num_tasks: Number of tasks (default from config)
             seed: Random seed for reproducibility
+            enable_diagnostics: Enable diagnostic logging for DQN stability analysis
+            reward_scale: Reward scaling factor (default 0.1 brings max rewards to ~10 range)
         """
         if seed is not None:
             np.random.seed(seed)
         
         self.num_workers = num_workers or config.NUM_WORKERS
         self.num_tasks = num_tasks or config.NUM_TASKS
+        
+        # Stability improvements for DQN
+        self.enable_diagnostics = enable_diagnostics
+        self.reward_scale = reward_scale
+        
+        # Diagnostic statistics
+        self.diagnostics = {
+            'state_ranges': [],
+            'reward_ranges': [],
+            'valid_action_counts': [],
+            'reward_components': []
+        } if enable_diagnostics else None
         
         # Initialize workers
         self.workers = [Worker(worker_id=i) for i in range(self.num_workers)]
@@ -168,9 +183,24 @@ class ProjectEnv:
         throughput_bonus = completion_reward  # Already computed
         deadline_penalty = self._compute_deadline_penalty()
         
-        # Total reward
-        reward = (action_reward + completion_reward + delay_penalty + 
-                 overload_penalty + throughput_bonus + deadline_penalty)
+        # Total reward (unscaled components)
+        reward_unscaled = (action_reward + completion_reward + delay_penalty + 
+                          overload_penalty + throughput_bonus + deadline_penalty)
+        
+        # Apply reward scaling for DQN stability
+        reward = reward_unscaled * self.reward_scale
+        
+        # Log diagnostics if enabled
+        if self.enable_diagnostics:
+            self.diagnostics['reward_components'].append({
+                'action': action_reward,
+                'completion': completion_reward,
+                'delay': delay_penalty,
+                'overload': overload_penalty,
+                'deadline': deadline_penalty,
+                'total_unscaled': reward_unscaled,
+                'total_scaled': reward
+            })
         
         self.episode_reward += reward
         
@@ -186,6 +216,13 @@ class ProjectEnv:
         
         # Get next state
         next_state = self._get_state()
+        
+        # Log diagnostics if enabled
+        if self.enable_diagnostics:
+            valid_actions = self.get_valid_actions()
+            self.diagnostics['state_ranges'].append((np.min(next_state), np.max(next_state)))
+            self.diagnostics['reward_ranges'].append(reward)
+            self.diagnostics['valid_action_counts'].append(len(valid_actions))
         
         # Info for logging
         info = {

@@ -105,6 +105,9 @@ class Task:
         
         # Progress based on time elapsed
         time_elapsed = current_time - self.start_time
+        # Safety check: prevent division by zero
+        if self.expected_completion_time is None or self.expected_completion_time <= 0:
+            self.expected_completion_time = 1  # Default minimum
         self.completion_progress = min(1.0, time_elapsed / self.expected_completion_time)
         
         # Check if completed
