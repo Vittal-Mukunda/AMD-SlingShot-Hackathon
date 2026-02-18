@@ -25,7 +25,8 @@ class ProjectEnv:
     """
     
     def __init__(self, num_workers: int = None, num_tasks: int = None, seed: int = None,
-                 enable_diagnostics: bool = False, reward_scale: float = 0.1):
+                 enable_diagnostics: bool = False, reward_scale: float = 0.1,
+                 config_overrides: Dict = None):
         """
         Initialize project management environment
         
@@ -35,6 +36,7 @@ class ProjectEnv:
             seed: Random seed for reproducibility
             enable_diagnostics: Enable diagnostic logging for DQN stability analysis
             reward_scale: Reward scaling factor (default 0.1 brings max rewards to ~10 range)
+            config_overrides: Dictionary to override default behaviors (for ablation studies)
         """
         if seed is not None:
             np.random.seed(seed)
@@ -45,6 +47,12 @@ class ProjectEnv:
         # Stability improvements for DQN
         self.enable_diagnostics = enable_diagnostics
         self.reward_scale = reward_scale
+        
+        # Configuration overrides for Ablation Studies
+        self.config_overrides = config_overrides or {}
+        self.enable_fatigue = self.config_overrides.get('enable_fatigue', True)
+        self.enable_deadline_shocks = self.config_overrides.get('enable_deadline_shocks', True)
+        self.fully_observable = self.config_overrides.get('fully_observable', False)
         
         # Diagnostic statistics
         self.diagnostics = {
@@ -338,7 +346,8 @@ class ProjectEnv:
         Update worker fatigue and other dynamics
         """
         for worker in self.workers:
-            worker.update_fatigue()
+            if self.enable_fatigue:
+                worker.update_fatigue()
             
             # Track overload events
             if worker.load > 4:
@@ -435,6 +444,9 @@ class ProjectEnv:
         """
         Random deadline shock: suddenly reduce deadline for a pending task
         """
+        if not self.enable_deadline_shocks:
+            return
+            
         pending_tasks = [t for t in self.tasks if not t.is_completed and not t.is_failed]
         if len(pending_tasks) > 0:
             shocked_task = np.random.choice(pending_tasks)
@@ -493,7 +505,15 @@ class ProjectEnv:
         task_features = np.concatenate(task_features)
         
         # Belief state: 5 means + 5 variances = 10 dim
-        belief_features = self.belief_state.get_state_vector()
+        # Or True Skills if fully_observable is True (Ablation Study)
+        if self.fully_observable:
+            # Use true skills for mean, 0.0 for variance
+            # This maintains the 88-dim state vector structure
+            skill_means = [w.true_skill for w in self.workers]
+            skill_vars = [0.0] * self.num_workers
+            belief_features = np.array(skill_means + skill_vars, dtype=np.float32)
+        else:
+            belief_features = self.belief_state.get_state_vector()
         
         # Global context: 3 dim
         time_progress = self.current_timestep / config.EPISODE_HORIZON
