@@ -78,6 +78,10 @@ class ProjectEnv:
         self.episode_reward = 0.0
         self.episode_history = []
         
+        # Reward diagnostics (reset each episode)
+        self._last_reward_breakdown = {}
+        self._episode_reward_breakdown = {}
+        
         # Metrics tracking
         self.metrics = {
             'throughput': 0,
@@ -111,6 +115,10 @@ class ProjectEnv:
         self.current_timestep = 0
         self.episode_reward = 0.0
         self.episode_history = []
+        
+        # Reset reward diagnostics
+        self._last_reward_breakdown = {}
+        self._episode_reward_breakdown = {}
         
         # Reset metrics
         self.metrics = {
@@ -197,6 +205,25 @@ class ProjectEnv:
         
         # Apply reward scaling for DQN stability
         reward = reward_unscaled * self.reward_scale
+        
+        # Track per-step reward breakdown for diagnostics export
+        self._last_reward_breakdown = {
+            'timestep': self.current_timestep,
+            'completion_reward': completion_reward,
+            'delay_penalty': delay_penalty,
+            'overload_penalty': overload_penalty,
+            'throughput_bonus': throughput_bonus,
+            'deadline_penalty': deadline_penalty,
+            'action_reward': action_reward,
+            'total_unscaled': reward_unscaled,
+            'total_scaled': reward
+        }
+        # Accumulate episode-level breakdown
+        for k in ('completion_reward', 'delay_penalty', 'overload_penalty',
+                  'throughput_bonus', 'deadline_penalty'):
+            self._episode_reward_breakdown[k] = (
+                self._episode_reward_breakdown.get(k, 0.0) + self._last_reward_breakdown[k]
+            )
         
         # Log diagnostics if enabled
         if self.enable_diagnostics:
@@ -591,6 +618,14 @@ class ProjectEnv:
             self.metrics['quality_score'] = np.mean(qualities)
         
         return self.metrics
+    
+    def get_reward_breakdown(self) -> Dict:
+        """Return the last step's per-component reward breakdown (for diagnostics)."""
+        return dict(self._last_reward_breakdown)
+    
+    def get_episode_reward_breakdown(self) -> Dict:
+        """Return cumulative per-component reward breakdown for the current episode."""
+        return dict(self._episode_reward_breakdown)
     
     def __repr__(self):
         return (f"ProjectEnv(t={self.current_timestep}, completed={len(self.completed_tasks)}/{self.num_tasks}, "

@@ -91,7 +91,7 @@ def plot_learning_curve(
     ax4_twin.set_ylim([0, 1.05])
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     
     print(f"✓ Learning curve saved to {output_path}")

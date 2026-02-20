@@ -5,6 +5,7 @@ Implements: Training with logging, checkpointing, early stopping, and stability 
 
 import numpy as np
 import torch
+import random
 import sys
 import os
 import csv
@@ -91,7 +92,8 @@ def train_dqn(
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
     
-    # Set seeds for reproducibility
+    # Set seeds for reproducibility (random + numpy + torch)
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
