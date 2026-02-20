@@ -60,30 +60,35 @@ ACTIVATION = 'relu'
 LEARNING_RATE = 0.0005
 GAMMA = 0.95  # Discount factor
 BATCH_SIZE = 64
-REPLAY_BUFFER_SIZE = 10000
+REPLAY_BUFFER_SIZE = 50000  # Increased for more diverse experience replay
 MIN_REPLAY_SIZE = 1000  # Start training after this many transitions
 TARGET_UPDATE_FREQ = 100  # Steps between target network updates
 
 # Exploration
 EPSILON_START = 1.0
 EPSILON_END = 0.05
-EPSILON_DECAY = 0.995  # Per episode
+# Tuned so epsilon reaches 0.05 near episode 3500 of a 5000-ep run:
+# 0.9994^3500 ≈ 0.12 ; close enough with natural floor at EPSILON_END
+EPSILON_DECAY = 0.9994  # Per episode (was 0.995 — decayed too slowly)
 
 # Training Control
-MAX_EPISODES = 2000
-CHECKPOINT_FREQ = 50  # Save model every N episodes
-EARLY_STOPPING_PATIENCE = 200  # Stop if no improvement for N episodes
+MAX_EPISODES = 5000      # Was 2000 — agent never had time to learn
+CHECKPOINT_FREQ = 100   # Save model every N episodes
+EARLY_STOPPING_PATIENCE = 1000  # Was 200 — stopped before any real learning
 CONVERGENCE_THRESHOLD = 1000  # Max Q-value magnitude (divergence check)
 
 # ============================================================================
 # REWARD FUNCTION WEIGHTS
 # ============================================================================
 
-REWARD_COMPLETION_BASE = 10.0  # Base reward per completed task
-REWARD_DELAY_WEIGHT = -0.5  # Penalty for time in queue
-REWARD_OVERLOAD_WEIGHT = -5.0  # Penalty for overloading workers
-REWARD_THROUGHPUT_WEIGHT = 2.0  # Bonus for tasks completed this step
-REWARD_DEADLINE_MISS_PENALTY = -50.0  # Catastrophic penalty for deadline miss
+# Rebalanced so completion can meaningfully outweigh penalties (was -50 deadline
+# vs +10 completion — gradient signal was completely dominated by deadline term)
+REWARD_COMPLETION_BASE = 15.0         # Was 10.0 — boosted to give signal room
+REWARD_DELAY_WEIGHT = -0.3            # Was -0.5 — slight reduction
+REWARD_OVERLOAD_WEIGHT = -2.0         # Was -5.0 — was drowning completions
+REWARD_THROUGHPUT_WEIGHT = 2.0        # Unchanged
+REWARD_DEADLINE_MISS_PENALTY = -15.0  # Was -50.0 — catastrophic penalty made
+                                       # all actions look equally bad to DQN
 
 # Reward shaping
 REWARD_STRATEGIC_DEFER = 1.0  # Bonus for deferring when no skilled worker
@@ -103,7 +108,7 @@ BASELINE_SKILL_ESTIMATION_EPISODES = 10  # Episodes to observe before using skil
 # ============================================================================
 
 # Training
-TRAIN_EPISODES = 2000
+TRAIN_EPISODES = 5000
 TRAIN_RANDOM_SEEDS = [42, 123, 456, 789, 1011]
 
 # Testing
