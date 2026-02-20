@@ -47,6 +47,7 @@ The system is benchmarked against 5 hand-crafted heuristic baselines and validat
 # Install dependencies
 pip install -r requirements.txt
 
+# --- AI Training Pipeline ---
 # Run the complete pipeline (train → baselines → evaluate → stats → plots)
 python run_pipeline.py --full
 
@@ -56,6 +57,13 @@ python run_pipeline.py --baselines
 python run_pipeline.py --evaluate
 python run_pipeline.py --stats
 python run_pipeline.py --plots
+
+# --- Web Backend & Agent Execution ---
+# Start the FastAPI Web Server (Serving on localhost:8000)
+uv run python scripts/run_server.py
+
+# Launch the discrete AI Agent orchestration loop (Observe -> Decide -> Act via MCP)
+uv run python scripts/run_agent_loop.py
 ```
 
 ---

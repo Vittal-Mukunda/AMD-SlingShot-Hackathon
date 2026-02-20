@@ -44,6 +44,30 @@ def register_tools(mcp):
         return task_service.update_status(task_id, TaskStatus(status))
 
     @mcp.tool()
+    def defer_task(task_id: str) -> dict:
+        """Defer a task temporarily, marking it as skipped for this round.
+
+        Args:
+            task_id (str): The ID of the task.
+
+        Returns:
+            dict: Update result.
+        """
+        return task_service.defer_task(task_id)
+
+    @mcp.tool()
+    def escalate_task(task_id: str) -> dict:
+        """Escalate a task priority, speeding up completion but costing resources.
+
+        Args:
+            task_id (str): The ID of the task.
+
+        Returns:
+            dict: Update result.
+        """
+        return task_service.escalate_task(task_id)
+
+    @mcp.tool()
     def get_state() -> dict:
         """Return global project state.
 

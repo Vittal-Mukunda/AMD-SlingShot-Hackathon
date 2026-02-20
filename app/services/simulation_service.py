@@ -1,71 +1,116 @@
+import sys
+import os
 from typing import List, Dict, Any
-from app.db.models import Task, Worker, SimulationState, TaskStatus
-from app.db.mock_db import global_state
+from app.db.models import Task, Worker, SimulationState, TaskStatus, TaskPriority
+from app.core.logging import setup_logger
+
+# Import the core RL environment
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from environment.project_env import ProjectEnv
+except ImportError:
+    ProjectEnv = None
+
+logger = setup_logger("SimulationService")
 
 class SimulationService:
-    def __init__(self):
-        self.state = global_state
-
-    def step(self, hours: float = 1.0) -> Dict[str, Any]:
-        """
-        Advances the simulation by 'hours'.
-        Updates task progress, worker fatigue, and checks deadlines.
-        """
-        self.state.current_time += hours
-        events = []
-
-        # 1. Process active tasks
-        for worker in self.state.workers:
-            if worker.current_task_id:
-                task = self._get_task(worker.current_task_id)
-                if task and task.status == TaskStatus.IN_PROGRESS:
-                    # Calculate progress
-                    # efficienty * skill_factor * time
-                    skill_factor = min(worker.skill_level / task.required_skill_level, 2.0)
-                    fatigue_factor = 1.0 - worker.fatigue
-                    
-                    progress = hours * worker.efficiency * skill_factor * fatigue_factor
-                    
-                    task.remaining_work -= progress
-                    
-                    # Update fatigue (simple linear increase)
-                    worker.fatigue = min(worker.fatigue + (0.05 * hours), 1.0)
-                    
-                    # Check completion
-                    if task.remaining_work <= 0:
-                        task.remaining_work = 0
-                        task.status = TaskStatus.COMPLETED
-                        task.completed_at = self.state.current_time
-                        worker.current_task_id = None
-                        worker.fatigue = max(worker.fatigue - 0.2, 0.0) # Rest bonus
-                        events.append(f"Task {task.title} completed by {worker.name}")
+    """
+    Adapter bridging the FastAPI backend to the RL ProjectEnv stochastic simulation.
+    """
+    _instance = None
+    
+    def __new__(cls):
+        # Singleton pattern to ensure the simulation state persists across API calls
+        if cls._instance is None:
+            cls._instance = super(SimulationService, cls).__new__(cls)
+            cls._instance.env = ProjectEnv(num_workers=3, num_tasks=10, seed=42) if ProjectEnv else None
+            if cls._instance.env:
+                cls._instance.env.reset()
+                logger.info("Initialized RL ProjectEnv Simulation")
             else:
-                # Resting
-                worker.fatigue = max(worker.fatigue - (0.1 * hours), 0.0)
+                logger.warning("ProjectEnv not found - running in fallback mode")
+        return cls._instance
 
-        # 2. Check deadlines
-        for task in self.state.tasks:
-            if task.status in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]:
-                if self.state.current_time > task.deadline:
-                    task.status = TaskStatus.FAILED
-                    # If assigned, free the worker
-                    if task.assigned_to:
-                        worker = self._get_worker(task.assigned_to)
-                        if worker:
-                            worker.current_task_id = None
-                    events.append(f"Task {task.title} failed due to deadline")
-
-        return {
-            "current_time": self.state.current_time,
-            "events": events,
-            "active_tasks_count": len([t for t in self.state.tasks if t.status == TaskStatus.IN_PROGRESS])
-        }
+    def step(self, action_index: int = None, hours: float = 1.0) -> Dict[str, Any]:
+        """
+        Advances the simulation. If action_index is provided, executes an RL action.
+        Otherwise (fallback), just ticks the time.
+        """
+        events = []
+        reward = 0.0
+        done = False
+        info = {}
+        
+        if self.env:
+            if action_index is not None:
+                _, reward, done, info = self.env.step(action_index)
+                events.append(f"Executed RL action {action_index}")
+            else:
+                # Fallback tick without specific action (e.g. idle step)
+                # We defer by default if no action provided but forcing a step
+                valid = self.env.get_valid_actions()
+                if valid:
+                    # pick a defer action (100+) manually or random valid
+                    defer_actions = [a for a in valid if a >= self.env.num_tasks * self.env.num_workers]
+                    idle_act = defer_actions[0] if defer_actions else valid[0]
+                    _, reward, done, info = self.env.step(idle_act)
+                    events.append("Executed idle/defer tick")
+            
+            logger.info("Simulation Step", extra={"extra_data": {
+                "time": self.env.current_timestep, 
+                "reward": reward,
+                "done": done
+            }})
+            return {
+                "current_time": self.env.current_timestep,
+                "events": events,
+                "reward": reward,
+                "done": done,
+                "info": info
+            }
+        else:
+            return {"error": "ProjectEnv not initialized"}
 
     def get_state(self) -> Dict[str, Any]:
-        return self.state.dict()
-
-    def _get_task(self, task_id: str) -> Task | None:
-        return next((t for t in self.state.tasks if t.id == task_id), None)
-
-    def _get_worker(self, worker_id: str) -> Worker | None:
-        return next((w for w in self.state.workers if w.id == worker_id), None)
+        """
+        Serializes the RL environment into the Pydantic API models
+        """
+        if not self.env:
+            return {"error": "ProjectEnv not loaded"}
+            
+        api_workers = []
+        for w in self.env.workers:
+            api_workers.append(Worker(
+                id=f"w{w.worker_id}",
+                name=f"Worker {w.worker_id}",
+                true_skill=w.true_skill,
+                fatigue=w.fatigue,
+                availability=w.availability,
+                current_task_id=f"t{w.assigned_tasks[0]}" if w.assigned_tasks else None
+            ))
+            
+        api_tasks = []
+        for t in self.env.tasks:
+            status = TaskStatus.TODO
+            if t.is_completed: status = TaskStatus.COMPLETED
+            elif t.is_failed: status = TaskStatus.FAILED
+            elif t.assigned_worker is not None: status = TaskStatus.IN_PROGRESS
+            
+            # Map RL priority (0-3) to TaskPriority
+            pri = TaskPriority(t.priority) if isinstance(t.priority, int) else t.priority
+            
+            api_tasks.append(Task(
+                id=f"t{t.task_id}",
+                title=f"Task {t.task_id}",
+                complexity=t.complexity,
+                deadline=t.deadline,
+                priority=pri,
+                status=status,
+                assigned_to=f"w{t.assigned_worker}" if t.assigned_worker is not None else None
+            ))
+            
+        return SimulationState(
+            tasks=api_tasks,
+            workers=api_workers,
+            current_time=self.env.current_timestep
+        ).model_dump()

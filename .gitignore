@@ -28,3 +28,8 @@ fastmcp_dir.txt
 inspect_fastmcp.py
 check_fastmcp.py
 dump_fastmcp.py
+
+# RL Outputs
+results/
+checkpoints/
+logs/

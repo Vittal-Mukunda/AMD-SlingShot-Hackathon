@@ -8,7 +8,7 @@ def create_initial_state() -> SimulationState:
         Task(
             id="t1", 
             title="Implement Authentication", 
-            description="Add JWT auth",
+            complexity=3,
             required_skill_level=3.0,
             estimated_duration=4.0,
             remaining_work=4.0,
@@ -18,7 +18,7 @@ def create_initial_state() -> SimulationState:
         Task(
             id="t2", 
             title="Design Database Schema", 
-            description="Create tables",
+            complexity=5,
             required_skill_level=5.0,
             estimated_duration=2.0,
             remaining_work=2.0,
@@ -28,7 +28,7 @@ def create_initial_state() -> SimulationState:
         Task(
             id="t3", 
             title="Write Documentation", 
-            description="API docs",
+            complexity=1,
             required_skill_level=1.0,
             estimated_duration=1.0,
             remaining_work=1.0,
@@ -38,9 +38,9 @@ def create_initial_state() -> SimulationState:
     ]
 
     initial_workers = [
-        Worker(id="w1", name="Alice", skill_level=8.0, efficiency=1.2),
-        Worker(id="w2", name="Bob", skill_level=4.0, efficiency=0.9),
-        Worker(id="w3", name="Charlie", skill_level=2.0, efficiency=1.0),
+        Worker(id="w1", name="Alice", skill_level=1.2, true_skill=1.2, efficiency=1.2),
+        Worker(id="w2", name="Bob", skill_level=0.9, true_skill=0.9, efficiency=0.9),
+        Worker(id="w3", name="Charlie", skill_level=1.0, true_skill=1.0, efficiency=1.0),
     ]
 
     return SimulationState(
