@@ -68,53 +68,74 @@ class SkillBaseline(BasePolicy):
     
     def select_action(self, state) -> int:
         """
-        Skill-matched assignment: match skilled workers to complex tasks
-        
+        Skill-matched assignment: assign to the available worker with the
+        highest estimated skill who currently has spare capacity.
+
+        Uses an explicit max() loop — no numpy argsort, no list re-indexing —
+        so the winning worker's original W-0…W-4 ID is never lost.
+
         Args:
             state: Current state (unused)
-        
+
         Returns:
-            Action index
+            Encoded action index
         """
-        # If still observing, use greedy policy
+        # Fallback to greedy during observation phase
         if self.is_observing or self.skill_estimates is None:
             return self._greedy_fallback()
-        
-        # Get pending tasks sorted by priority
+
+        # --- Build unassigned pending task list --------------------------------
         completed_ids = [t.task_id for t in self.env.completed_tasks]
         pending_tasks = [
-            t for t in self.env.tasks 
-            if not t.is_completed and not t.is_failed and t.assigned_worker is None
+            t for t in self.env.tasks
+            if not t.is_completed
+            and not t.is_failed
+            and t.assigned_worker is None
             and t.check_dependencies_met(completed_ids)
         ]
-        
-        if len(pending_tasks) == 0:
+
+        if not pending_tasks:
             return self.encode_action(0, action_type='defer')
-        
-        pending_tasks = sorted(pending_tasks, key=lambda t: -t.priority)
-        
-        # Get available workers
-        available_workers = [w for w in self.env.workers if w.availability == 1]
-        
-        if len(available_workers) == 0:
-            return self.encode_action(pending_tasks[0].task_id, action_type='defer')
-        
-        # For highest priority task, find best skill match
+
+        # Sort: highest priority first, then tightest deadline
+        pending_tasks = sorted(
+            pending_tasks,
+            key=lambda t: (-t.priority, -t.get_deadline_urgency(self.env.current_timestep))
+        )
         selected_task = pending_tasks[0]
-        
-        # Score workers by skill match: skill / complexity
+
+        # --- Stage 1: capacity-limited available subset -----------------------
+        # availability == 1 (not burned out) AND load is below overload threshold
+        available_workers = [
+            w for w in self.env.workers
+            if w.availability == 1 and w.load < config.OVERLOAD_THRESHOLD
+        ]
+
+        if not available_workers:
+            # All workers burned out or at capacity — defer
+            return self.encode_action(selected_task.task_id, action_type='defer')
+
+        # --- Stage 2: explicit max() over the available subset ----------------
+        # Helper: safely resolve skill estimate to float for any worker
+        def get_skill(worker):
+            raw = self.skill_estimates.get(worker.worker_id, 1.0)
+            if isinstance(raw, list):
+                return float(np.mean(raw)) if raw else 1.0
+            return float(raw)
+
+        # Explicit loop — preserves original worker.worker_id at all times
         best_worker = None
-        best_score = -np.inf
-        
-        for worker in available_workers:
-            skill = self.skill_estimates[worker.worker_id]
-            score = skill / selected_task.complexity
-            
-            if score > best_score:
-                best_score = score
-                best_worker = worker
-        
+        best_skill  = -1.0
+        for w in available_workers:
+            skill = get_skill(w)
+            if skill > best_skill:
+                best_skill  = skill
+                best_worker = w          # Retain the original Worker object
+
+        # best_worker.worker_id is the original W-0…W-4 identifier
         return self.encode_action(selected_task.task_id, best_worker.worker_id, 'assign')
+
+
     
     def _greedy_fallback(self) -> int:
         """

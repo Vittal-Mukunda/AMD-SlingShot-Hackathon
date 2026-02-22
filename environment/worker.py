@@ -28,7 +28,7 @@ class Worker:
     
     def __init__(self, worker_id: int, skill: float = None):
         """
-        Initialize worker with random skill if not provided
+        Initialize worker with random skill and differentiated hidden parameters.
         
         Args:
             worker_id: Unique worker identifier
@@ -42,11 +42,29 @@ class Worker:
         self.completion_history = []
         self.burnout_timer = 0
         
-        # Hidden skill (only observed through completion times)
+        # Hidden skill (only observed indirectly through task completion quality)
         if skill is not None:
             self.true_skill = skill
         else:
             self.true_skill = np.random.uniform(config.SKILL_MIN, config.SKILL_MAX)
+        
+        # ── Differentiated hidden parameters (unique per worker, hidden from agents) ──
+        # How fast this worker accumulates fatigue when overloaded (sampled around global default)
+        self.fatigue_rate = np.clip(
+            np.random.normal(config.FATIGUE_ACCUMULATION_RATE, 0.05), 0.05, 0.5
+        )
+        # How fast this worker recovers when idle
+        self.recovery_rate = np.clip(
+            np.random.normal(config.FATIGUE_RECOVERY_RATE, 0.03), 0.02, 0.25
+        )
+        # Speed multiplier: affects how quickly they process tasks (around 1.0)
+        self.speed_multiplier = np.clip(
+            np.random.normal(1.0, 0.15), 0.6, 1.5
+        )
+        # Personal burnout threshold (how resilient they are to burnout)
+        self.burnout_resilience = np.clip(
+            np.random.normal(config.FATIGUE_THRESHOLD, 0.2), 1.8, 3.0
+        )
     
     def assign_task(self, task_id: int):
         """
@@ -79,8 +97,8 @@ class Worker:
         self.assigned_tasks.remove(task_id)
         self.load = max(0, self.load - 1)
         
-        # Compute base completion time (affected by skill)
-        expected_time = complexity / self.true_skill
+        # Compute base completion time (affected by skill AND per-worker speed multiplier)
+        expected_time = complexity / (self.true_skill * self.speed_multiplier)
         
         # Add fatigue penalty
         fatigue_multiplier = 1.0 + 0.5 * self.fatigue
@@ -115,19 +133,19 @@ class Worker:
                 self.fatigue = 1.0  # Return as "tired" not fresh
             return
         
-        # Fatigue accumulation when overloaded
+        # Fatigue accumulation when overloaded (uses per-worker fatigue_rate)
         if self.load > config.OVERLOAD_THRESHOLD:
             # Stochastic fatigue increase (higher probability when already tired)
             fatigue_prob = 0.3 + 0.1 * self.fatigue  # 30-60% chance
             if np.random.rand() < fatigue_prob:
-                self.fatigue = min(3.0, self.fatigue + config.FATIGUE_ACCUMULATION_RATE)
+                self.fatigue = min(3.0, self.fatigue + self.fatigue_rate)
         
-        # Recovery when idle
+        # Recovery when idle (uses per-worker recovery_rate)
         elif self.load == 0:
-            self.fatigue = max(0.0, self.fatigue - config.FATIGUE_RECOVERY_RATE)
+            self.fatigue = max(0.0, self.fatigue - self.recovery_rate)
         
-        # Check for burnout
-        if self.fatigue >= config.FATIGUE_THRESHOLD:
+        # Check for burnout (uses per-worker burnout_resilience threshold)
+        if self.fatigue >= self.burnout_resilience:
             self.trigger_burnout()
     
     def trigger_burnout(self):
@@ -173,9 +191,28 @@ class Worker:
         
         return mean_skill, uncertainty
     
+    def get_hidden_profile(self) -> dict:
+        """
+        Return all hidden variables for this worker.
+        FOR OBSERVER DISPLAY ONLY — never called by agents or included in state.
+        
+        Returns:
+            Dict of hidden worker parameters
+        """
+        return {
+            'worker_id': self.worker_id,
+            'true_skill': round(float(self.true_skill), 3),
+            'fatigue_rate': round(float(self.fatigue_rate), 3),
+            'recovery_rate': round(float(self.recovery_rate), 3),
+            'speed_multiplier': round(float(self.speed_multiplier), 3),
+            'burnout_resilience': round(float(self.burnout_resilience), 3),
+        }
+    
     def reset(self, new_skill: float = None):
         """
-        Reset worker state for new episode
+        Reset worker state for new episode.
+        Hidden parameters (true_skill, fatigue_rate, etc.) are preserved across episodes
+        since they represent permanent worker traits.
         
         Args:
             new_skill: Optional new skill level, otherwise keep current
@@ -189,8 +226,8 @@ class Worker:
         
         if new_skill is not None:
             self.true_skill = new_skill
-        elif np.random.rand() < 0.5:  # 50% chance to resample skill
-            self.true_skill = np.random.uniform(config.SKILL_MIN, config.SKILL_MAX)
+        # NOTE: fatigue_rate, recovery_rate, speed_multiplier, burnout_resilience
+        # are NOT resampled on reset — they are permanent worker traits.
     
     def __repr__(self):
         return (f"Worker({self.worker_id}, load={self.load}, fatigue={self.fatigue:.2f}, "

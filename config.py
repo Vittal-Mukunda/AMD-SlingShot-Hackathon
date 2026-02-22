@@ -81,14 +81,18 @@ CONVERGENCE_THRESHOLD = 1000  # Max Q-value magnitude (divergence check)
 # REWARD FUNCTION WEIGHTS
 # ============================================================================
 
-# Rebalanced so completion can meaningfully outweigh penalties (was -50 deadline
-# vs +10 completion — gradient signal was completely dominated by deadline term)
-REWARD_COMPLETION_BASE = 15.0         # Was 10.0 — boosted to give signal room
-REWARD_DELAY_WEIGHT = -0.3            # Was -0.5 — slight reduction
-REWARD_OVERLOAD_WEIGHT = -2.0         # Was -5.0 — was drowning completions
-REWARD_THROUGHPUT_WEIGHT = 2.0        # Unchanged
-REWARD_DEADLINE_MISS_PENALTY = -15.0  # Was -50.0 — catastrophic penalty made
-                                       # all actions look equally bad to DQN
+# ── Reward Hierarchy (strictly enforced) ─────────────────────────────────────
+# R_t = (+20·Ct) - (20·Dt) - (0.1·St) - (0.1·σt)
+#   Ct = tasks completed this step   (primary objective)
+#   Dt = tasks dropped/missed        (severe gating penalty)
+#   St = step delay sum              (tiny secondary signal)
+#   σt = worker load std-dev         (mild tertiary signal)
+REWARD_COMPLETION_BASE       = 20.0   # +20 × (priority+1) × quality per completed task
+REWARD_DELAY_WEIGHT          = -0.1   # Per step; applied only to the *current* step not sum
+REWARD_OVERLOAD_WEIGHT       = -0.1   # Multiplied by load std-dev (σ), not quadratic overload
+REWARD_THROUGHPUT_WEIGHT     = 2.0    # Legacy; not used in active reward path
+REWARD_DEADLINE_MISS_PENALTY = -20.0  # One-shot hit per dropped / deadline-missed task
+
 
 # Reward shaping
 REWARD_STRATEGIC_DEFER = 1.0  # Bonus for deferring when no skilled worker

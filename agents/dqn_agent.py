@@ -1,6 +1,6 @@
 """
 Deep Q-Network (DQN) Agent for Project Task Allocation
-Architecture: 88 → 128 ReLU → 128 ReLU → 140
+Architecture: 64 → 128 ReLU → 128 ReLU → 140
 Implements: Experience replay, target network, epsilon-greedy with action masking
 """
 
@@ -19,15 +19,15 @@ import config
 class QNetwork(nn.Module):
     """
     Q-Network: approximates Q(s,a) for all actions
-    Architecture: 88 → 128 ReLU → 128 ReLU → 140
+    Architecture: 64 → 128 ReLU → 128 ReLU → 140
     """
     
-    def __init__(self, state_dim: int = 88, action_dim: int = 140, hidden_layers: List[int] = [128, 128]):
+    def __init__(self, state_dim: int = 64, action_dim: int = 140, hidden_layers: List[int] = [128, 128]):
         """
         Initialize Q-network
         
         Args:
-            state_dim: Dimension of state space (88)
+            state_dim: Dimension of state space (64)
             action_dim: Dimension of action space (140)
             hidden_layers: List of hidden layer sizes [128, 128]
         """
@@ -61,7 +61,7 @@ class QNetwork(nn.Module):
         Forward pass
         
         Args:
-            state: State tensor (batch_size, 88)
+            state: State tensor (batch_size, 64)
         
         Returns:
             Q-values for all actions (batch_size, 140)
@@ -132,7 +132,7 @@ class DQNAgent:
     Epsilon-greedy exploration with action masking
     """
     
-    def __init__(self, state_dim: int = 88, action_dim: int = 140,
+    def __init__(self, state_dim: int = 66, action_dim: int = 140,
                  learning_rate: float = 0.0005, gamma: float = 0.95,
                  epsilon_start: float = 1.0, epsilon_end: float = 0.05,
                  epsilon_decay: float = 0.995, replay_capacity: int = 10000,
@@ -140,9 +140,8 @@ class DQNAgent:
                  device: str = None):
         """
         Initialize DQN agent
-        
         Args:
-            state_dim: State dimension (88)
+            state_dim: State dimension (66)
             action_dim: Action dimension (140)
             learning_rate: Adam learning rate (0.0005)
             gamma: Discount factor (0.95)
@@ -198,7 +197,7 @@ class DQNAgent:
         Epsilon-greedy action selection with action masking
         
         Args:
-            state: Current state (88-dim)
+            state: Current state (66-dim)
             valid_actions: List of valid action indices
             greedy: If True, use greedy policy (epsilon=0)
         
@@ -354,7 +353,7 @@ if __name__ == "__main__":
     print(f"✓ Initialized: device={agent.device}, epsilon={agent.epsilon:.2f}")
     
     # Test 2: Network forward pass
-    state = np.random.rand(88)
+    state = np.random.rand(66)
     with torch.no_grad():
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
         q_values = agent.policy_net(state_tensor)
@@ -369,10 +368,10 @@ if __name__ == "__main__":
     
     # Test 4: Store and train
     for _ in range(100):
-        s = np.random.rand(88)
+        s = np.random.rand(66)
         a = np.random.choice(140)
         r = np.random.randn()
-        s_next = np.random.rand(88)
+        s_next = np.random.rand(66)
         done = False
         agent.store_transition(s, a, r, s_next, done)
     

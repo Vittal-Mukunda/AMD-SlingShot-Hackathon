@@ -40,6 +40,7 @@ class ProjectEnv:
         """
         if seed is not None:
             np.random.seed(seed)
+        self._env_seed = seed  # Private: stored for reproducible resets, never in state
         
         self.num_workers = num_workers or config.NUM_WORKERS
         self.num_tasks = num_tasks or config.NUM_TASKS
@@ -92,6 +93,16 @@ class ProjectEnv:
             'overload_events': 0
         }
     
+    def get_seed(self) -> int:
+        """
+        Return the environment seed for OBSERVER DISPLAY ONLY.
+        This is never called by agents (baselines or DQN) during normal operation.
+        
+        Returns:
+            The seed value, or None if no seed was set
+        """
+        return self._env_seed
+    
     def reset(self) -> np.ndarray:
         """
         Reset environment for new episode
@@ -99,7 +110,13 @@ class ProjectEnv:
         Returns:
             Initial state observation (88-dim vector)
         """
-        # Reset workers
+        # Re-apply the environment seed to ensure identical task generation
+        # on every reset() when the same seed is used.
+        # This guarantees reproducibility for fair baseline vs DQN comparison.
+        if self._env_seed is not None:
+            np.random.seed(self._env_seed)
+        
+        # Reset workers (hidden params preserved; only episode state clears)
         for worker in self.workers:
             worker.reset()
         
@@ -194,15 +211,28 @@ class ProjectEnv:
         completion_reward = self._update_task_progress()
         
         # Compute reward components
-        delay_penalty = self._compute_delay_penalty()
+        # ─────────────────────────────────────────────────────────────────────
+        # Hierarchy (MUST be learned in this order):
+        #   1. PRIMARY:   completion_reward — large positive, up to +72 per task
+        #   2. GATING:    deadline_penalty  — severe one-shot hit per missed task
+        #   3. SECONDARY: overload_penalty  — mild quadratic, barely dents primary
+        #   4. TERTIARY:  delay_penalty     — tiny per-step tick, almost noise
+        # ─────────────────────────────────────────────────────────────────────
+        delay_penalty    = self._compute_delay_penalty()
         overload_penalty = self._compute_overload_penalty()
-        throughput_bonus = completion_reward  # Already computed
         deadline_penalty = self._compute_deadline_penalty()
-        
-        # Total reward (unscaled components)
-        reward_unscaled = (action_reward + completion_reward + delay_penalty + 
-                          overload_penalty + throughput_bonus + deadline_penalty)
-        
+
+        # NOTE: throughput_bonus was previously set to completion_reward (double count!).
+        # Removed — completion_reward is the sole completion signal.
+        reward_unscaled = (action_reward + completion_reward
+                          + delay_penalty + overload_penalty + deadline_penalty)
+
+        # Terminal success bonus: reward finishing ALL tasks (anti-reward-hacking).
+        # An agent cannot earn this by dropping tasks to clear the queue.
+        if len(self.completed_tasks) == self.num_tasks:
+            reward_unscaled += 5.0   # Flat bonus for 100% completion
+
+
         # Apply reward scaling for DQN stability
         reward = reward_unscaled * self.reward_scale
         
@@ -212,18 +242,17 @@ class ProjectEnv:
             'completion_reward': completion_reward,
             'delay_penalty': delay_penalty,
             'overload_penalty': overload_penalty,
-            'throughput_bonus': throughput_bonus,
             'deadline_penalty': deadline_penalty,
             'action_reward': action_reward,
             'total_unscaled': reward_unscaled,
             'total_scaled': reward
         }
         # Accumulate episode-level breakdown
-        for k in ('completion_reward', 'delay_penalty', 'overload_penalty',
-                  'throughput_bonus', 'deadline_penalty'):
+        for k in ('completion_reward', 'delay_penalty', 'overload_penalty', 'deadline_penalty'):
             self._episode_reward_breakdown[k] = (
                 self._episode_reward_breakdown.get(k, 0.0) + self._last_reward_breakdown[k]
             )
+
         
         # Log diagnostics if enabled
         if self.enable_diagnostics:
@@ -420,34 +449,38 @@ class ProjectEnv:
     
     def _compute_delay_penalty(self) -> float:
         """
-        Penalty for tasks waiting in queue
-        
+        Flat per-step delay penalty: -0.1 × S_t (where S_t = 1 per timestep).
+
+        Changed from cumulative queue-time sum (−Σ normalized_delay) which
+        was growing unbounded across steps and dominating the reward signal.
+        Now a predictable constant nudge so that completion/deadline terms
+        remain the primary learning signal.
+
         Returns:
-            Negative reward based on queue delays
+            -0.1 (constant per step)
         """
-        penalty = 0.0
-        for task in self.tasks:
-            if not task.is_completed and not task.is_failed:
-                time_in_queue = self.current_timestep - task.arrival_time
-                normalized_delay = time_in_queue / max(1, task.deadline)
-                penalty += config.REWARD_DELAY_WEIGHT * normalized_delay
-        
-        return penalty
+        return config.REWARD_DELAY_WEIGHT   # -0.1 per step
+
     
     def _compute_overload_penalty(self) -> float:
         """
-        Quadratic penalty for overloading workers
-        
+        Load-balance penalty: -0.1 × σ(worker loads).
+
+        σ = std-dev of the active task count across all workers.
+        Uses the same population std-dev formula shown in the README:
+            σ = sqrt( (1/N) × Σ(x_i - μ)^2 )
+
+        A perfectly balanced team has σ=0 → no penalty.
+        Maximum load imbalance with one worker carrying OVERLOAD_THRESHOLD
+        tasks and others idle → σ ≈ 2.0 → penalty = -0.2 per step.
+
         Returns:
-            Negative reward based on worker overload
+            REWARD_OVERLOAD_WEIGHT (-0.1) × σ
         """
-        penalty = 0.0
-        for worker in self.workers:
-            if worker.load > config.OVERLOAD_THRESHOLD:
-                overload = worker.load - config.OVERLOAD_THRESHOLD
-                penalty += config.REWARD_OVERLOAD_WEIGHT * (overload ** 2)
-        
-        return penalty
+        loads = np.array([w.load for w in self.workers], dtype=float)
+        sigma = float(np.std(loads))   # population std-dev
+        return config.REWARD_OVERLOAD_WEIGHT * sigma
+
     
     def _compute_deadline_penalty(self) -> float:
         """
@@ -608,9 +641,18 @@ class ProjectEnv:
             delays = [t.actual_completion_time - t.arrival_time for t in self.completed_tasks]
             self.metrics['avg_delay'] = np.mean(delays)
         
-        # Load balance
-        loads = [w.load for w in self.workers]
-        self.metrics['load_balance'] = np.std(loads)
+        # ── FIXED: Load balance ──────────────────────────────────────────────
+        # w.load is the LIVE active-task count and resets to 0 as tasks complete,
+        # so at episode end all workers show load=0 → std = 0.000 (the reported bug).
+        # Correct approach: count TOTAL tasks ever assigned to each worker this episode.
+        tasks_per_worker = np.zeros(self.num_workers, dtype=float)
+        for task in self.tasks:
+            # Count both completed tasks and in-progress/failed tasks that were assigned
+            if task.assigned_worker is not None:
+                wid = int(task.assigned_worker)
+                if 0 <= wid < self.num_workers:
+                    tasks_per_worker[wid] += 1
+        self.metrics['load_balance'] = float(np.std(tasks_per_worker))
         
         # Quality score
         if len(self.completed_tasks) > 0:

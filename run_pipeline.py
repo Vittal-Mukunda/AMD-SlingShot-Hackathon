@@ -266,10 +266,10 @@ Examples:
     # Runtime overrides
     parser.add_argument('--episodes',          type=int,   default=config.TRAIN_EPISODES,
                         help=f'Training episodes (default: {config.TRAIN_EPISODES})')
-    parser.add_argument('--baseline-episodes', type=int,   default=200,
-                        help='Episodes per baseline (default: 200)')
-    parser.add_argument('--eval-episodes',     type=int,   default=200,
-                        help='Evaluation episodes per condition (default: 200)')
+    parser.add_argument('--baseline-episodes', type=int,   default=1000,
+                        help='Episodes per baseline (default: 1000)')
+    parser.add_argument('--eval-episodes',     type=int,   default=1000,
+                        help='Evaluation episodes per condition (default: 1000)')
     parser.add_argument('--seed',              type=int,   default=42,
                         help='Base random seed (default: 42)')
     parser.add_argument('--variance-mult',     type=float, default=config.TEST_VARIANCE_MULTIPLIER,

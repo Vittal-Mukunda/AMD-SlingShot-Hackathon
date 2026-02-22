@@ -40,72 +40,75 @@ class HybridBaseline(BasePolicy):
     
     def select_action(self, state) -> int:
         """
-        Hybrid assignment: balance priority, skill, load, and fatigue
-        
+        Hybrid assignment: balance skill, current load, and fatigue rate.
+
+        Scoring function (additive, not multiplicative):
+            score = estimated_skill
+                  - LOAD_COEFF   * worker.load        (penalise loaded workers)
+                  - FATIGUE_COEFF * worker.fatigue     (penalise already-tired workers)
+
+        This forces work to spread across the team before the top-skill worker
+        accumulates too many tasks and burns out.
+
         Args:
             state: Current state (unused - uses env directly)
-        
-       Returns:
+
+        Returns:
             Action index
         """
         # Update skill estimates from recent completions
         self._update_skill_estimates()
-        
+
+        # ── Tunable penalty coefficients ─────────────────────────────────────
+        LOAD_COEFF   = 0.40   # Each extra active task costs 0.4 skill points in score
+        FATIGUE_COEFF = 0.25  # Each unit of current fatigue costs 0.25 skill points
+
         # Get pending tasks
         completed_ids = [t.task_id for t in self.env.completed_tasks]
         pending_tasks = [
-            t for t in self.env.tasks 
+            t for t in self.env.tasks
             if not t.is_completed and not t.is_failed and t.assigned_worker is None
             and t.check_dependencies_met(completed_ids)
         ]
-        
+
         if len(pending_tasks) == 0:
             return self.encode_action(0, action_type='defer')
-        
-        # Sort tasks by hybrid score: priority * 10 + deadline_urgency
+
+        # Sort tasks by hybrid urgency: priority × 10 + deadline_urgency
         pending_tasks = sorted(
             pending_tasks,
             key=lambda t: -(t.priority * 10 + t.get_deadline_urgency(self.env.current_timestep))
         )
-        
-        # Select highest priority task
+
         selected_task = pending_tasks[0]
-        
-        # Score available workers
+
+        # Available workers: must not be burned out
         available_workers = [w for w in self.env.workers if w.availability == 1 and w.fatigue < 3]
-        
+
         if len(available_workers) == 0:
-            # All workers unavailable or burned out - defer
             return self.encode_action(selected_task.task_id, action_type='defer')
-        
-        # Worker scoring: (skill / complexity) / max(1, load) with fatigue penalty
+
+        # ── FIXED: additive scoring that distributes load ──────────────────────
         best_worker = None
         best_score = -np.inf
-        
+
         for worker in available_workers:
-            skill = self.skill_estimates[worker.worker_id]
-            
-            # Skill match score
-            skill_match = skill / selected_task.complexity
-            
-            # Load penalty: prefer less loaded workers
-            load_penalty = 1.0 / max(1, worker.load)
-            
-            # Fatigue penalty: avoid tired workers for complex tasks
-            fatigue_penalty = 1.0 - 0.2 * worker.fatigue
-            
-            # Combined score
-            score = skill_match * load_penalty * fatigue_penalty
-            
+            # Safe float extraction from skill_estimates (may be list or float)
+            raw = self.skill_estimates.get(worker.worker_id, 1.0)
+            skill = float(np.mean(raw)) if isinstance(raw, list) and len(raw) > 0 else float(raw) if not isinstance(raw, list) else 1.0
+
+            # Additive heuristic: penalise load and current fatigue explicitly
+            score = skill - LOAD_COEFF * worker.load - FATIGUE_COEFF * worker.fatigue
+
             if score > best_score:
                 best_score = score
                 best_worker = worker
-        
+
         if best_worker is None:
-            # Shouldn't happen, but fallback to defer
             return self.encode_action(selected_task.task_id, action_type='defer')
-        
+
         return self.encode_action(selected_task.task_id, best_worker.worker_id, 'assign')
+
     
     def _update_skill_estimates(self):
         """
