@@ -280,37 +280,33 @@ def load_dqn_agent():
     """
     Load the trained DQN agent from checkpoints/best_model.pth.
 
-    CHECKPOINT LOADING DISABLED — DQN must be retrained from scratch on the
-    new reward function (R_t = +20·Ct - 20·Dt - 0.1·St - 0.1·σt).
-
-    To re-enable after retraining:
-      1. Run:  python run_pipeline.py --train
-      2. Uncomment the agent.load() block below and comment out the early return.
-
     Returns:
-        None (checkpoint disabled until retrained)
+        DQNAgent instance ready for greedy evaluation, or None if not found.
     """
-    # ── DISABLED: checkpoint load ─────────────────────────────────────────────
-    # Uncomment after retraining on the new reward function:
-    #
-    # from agents.dqn_agent import DQNAgent
-    # model_path = os.path.join(PROJECT_ROOT, 'checkpoints', 'best_model.pth')
-    # if not os.path.exists(model_path):
-    #     print(f'\n  ⚠️   DQN checkpoint not found at: {model_path}')
-    #     print('  Train the agent first: python run_pipeline.py --train')
-    #     return None
-    # agent = DQNAgent(state_dim=config.STATE_DIM, action_dim=config.ACTION_DIM)
-    # agent.load(model_path)
-    # agent.epsilon = 0.0   # Pure greedy evaluation
-    # agent.policy_net.eval()
-    # print(f'\n  ✅  DQN agent loaded from {model_path}')
-    # return agent
-    # ─────────────────────────────────────────────────────────────────────────
+    from agents.dqn_agent import DQNAgent
 
-    print('\n  ℹ️   DQN checkpoint loading is disabled pending retraining.')
-    print('  Run:  python run_pipeline.py --train')
-    print('  Then re-enable the load block in demo_run.py → load_dqn_agent().\n')
-    return None
+    model_path = os.path.join(PROJECT_ROOT, 'checkpoints', 'best_model.pth')
+
+    if not os.path.exists(model_path):
+        print(f'\n  ⚠️   DQN checkpoint not found at: {model_path}')
+        print('  Train the agent first:  python run_pipeline.py --train')
+        print('  Skipping DQN section of the demo.\n')
+        return None
+
+    try:
+        agent = DQNAgent(state_dim=config.STATE_DIM, action_dim=config.ACTION_DIM)
+        agent.load(model_path)
+        agent.epsilon = 0.0          # Pure greedy — no random exploration during demo
+        agent.policy_net.eval()
+        print(f'\n  ✅  DQN agent loaded from {model_path}')
+        return agent
+    except Exception as e:
+        print(f'\n  ⚠️   Failed to load DQN checkpoint: {e}')
+        print('  The checkpoint may be from a different architecture or PyTorch version.')
+        print('  Retrain with:  python run_pipeline.py --train\n')
+        return None
+
+
 
 
 

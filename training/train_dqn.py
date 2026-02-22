@@ -6,7 +6,7 @@ Fixes applied (v2):
   - Early stopping patience raised to 1000 (was 200)
   - Best-model guard: checkpoint only after moving_avg_window episodes
   - Per-component reward logging in CSV (completion, delay, deadline, overload)
-  - Live training visualizer hook (non-blocking, updates every 10 episodes)
+  - Live visualization removed: training runs fully headless (console logs only)
 """
 
 import numpy as np
@@ -63,10 +63,9 @@ def train_dqn(
     results_dir: str = None,
     checkpoints_dir: str = None,
     enable_diagnostics: bool = False,
-    live_viz: bool = True,
 ):
     """
-    Main DQN training loop (v2 — fixes early stopping, reward imbalance, live viz).
+    Main DQN training loop (v2).
 
     Args:
         max_episodes:           Maximum training episodes (5000)
@@ -80,7 +79,6 @@ def train_dqn(
         results_dir:            Directory for results
         checkpoints_dir:        Directory for checkpoints
         enable_diagnostics:     Enable environment diagnostics
-        live_viz:               Show live training dashboard (default True)
 
     Returns:
         Dictionary with training summary
@@ -122,18 +120,6 @@ def train_dqn(
     # Initialize logger
     log_path = os.path.join(results_dir, 'training_log.csv')
     logger = TrainingLogger(log_path)
-
-    # Initialize live visualizer
-    viz = None
-    if live_viz:
-        try:
-            from training.live_training_visualizer import LiveTrainingVisualizer
-            viz_output = os.path.join(results_dir, 'learning_curve.png')
-            viz = LiveTrainingVisualizer(output_path=viz_output, update_freq=10)
-            print("  [viz] Live training dashboard enabled (updates every 10 episodes)")
-        except Exception as e:
-            print(f"  [viz] Dashboard unavailable ({e}), training continues without it.")
-            viz = None
 
     # Training state
     episode_returns = []
@@ -263,15 +249,6 @@ def train_dqn(
         }
         logger.log_episode(log_metrics)
 
-        # ── Live visualizer update ───────────────────────────────────────────
-        if viz is not None:
-            viz.update(
-                episode=episode,
-                episode_return=episode_reward,
-                epsilon=agent.epsilon,
-                q_mean=log_metrics['mean_q_value'],
-                breakdown=breakdown,
-            )
 
         # Periodic checkpoint
         if (episode + 1) % checkpoint_freq == 0:
@@ -301,13 +278,6 @@ def train_dqn(
     if not os.path.exists(best_model_path):
         agent.save(best_model_path)
         print("  [warn] best_model.pth saved at training end (guard window not reached)")
-
-    # Save final visualizer snapshot
-    if viz is not None:
-        try:
-            viz.save_final()
-        except Exception as e:
-            print(f"  [viz] Could not save final plot: {e}")
 
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE")
@@ -351,5 +321,4 @@ if __name__ == "__main__":
         reward_scale=0.1,
         learning_rate=0.0005,
         seed=42,
-        live_viz=True,
     )
