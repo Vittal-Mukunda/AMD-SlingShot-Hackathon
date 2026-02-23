@@ -1,4 +1,13 @@
-# Agents package
-from .dqn_agent import DQNAgent, QNetwork, ReplayBuffer
+# Agents package  (v3 — Dueling DQN + PER)
+from .dqn_agent import DQNAgent, DuelingQNetwork, PrioritizedReplayBuffer, SumTree
 
-__all__ = ['DQNAgent', 'QNetwork', 'ReplayBuffer']
+# Backward-compatible aliases (prevents ImportError for code that imported old names)
+QNetwork = DuelingQNetwork
+ReplayBuffer = PrioritizedReplayBuffer
+
+__all__ = [
+    'DQNAgent',
+    'DuelingQNetwork', 'PrioritizedReplayBuffer', 'SumTree',
+    # legacy aliases
+    'QNetwork', 'ReplayBuffer',
+]

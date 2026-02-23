@@ -2,11 +2,12 @@
 Complete DQN Training Loop for Project Task Allocation
 Implements: Training with logging, checkpointing, early stopping, and stability monitoring
 
-Fixes applied (v2):
-  - Early stopping patience raised to 1000 (was 200)
-  - Best-model guard: checkpoint only after moving_avg_window episodes
-  - Per-component reward logging in CSV (completion, delay, deadline, overload)
-  - Live visualization removed: training runs fully headless (console logs only)
+Changes (v3 — Dueling DQN + PER):
+  - Agent now uses DuelingQNetwork + PrioritizedReplayBuffer + Double DQN
+  - Passes episode index to update_epsilon() for CosineAnnealingWarmRestarts
+  - Learning rate and batch size driven from config.py (v3 tuned values)
+  - PER beta logged in CSV for monitoring IS-correction progress
+  - Backward-incompatible checkpoint format: delete old best_model.pth before re-training
 """
 
 import numpy as np
@@ -58,14 +59,15 @@ def train_dqn(
     early_stopping_patience: int = 1000,
     moving_avg_window: int = 50,
     reward_scale: float = 0.1,
-    learning_rate: float = 0.0005,
+    learning_rate: float = None,      # None → use config.LEARNING_RATE
+    batch_size: int = None,            # None → use config.BATCH_SIZE
     seed: int = 42,
     results_dir: str = None,
     checkpoints_dir: str = None,
     enable_diagnostics: bool = False,
 ):
     """
-    Main DQN training loop (v2).
+    Main DQN training loop (v3 — Dueling DQN + PER).
 
     Args:
         max_episodes:           Maximum training episodes (5000)
@@ -74,7 +76,8 @@ def train_dqn(
         early_stopping_patience:Episodes without improvement before stopping (1000)
         moving_avg_window:      Window for moving average return (50)
         reward_scale:           Environment reward scaling (0.1)
-        learning_rate:          DQN learning rate (0.0005)
+        learning_rate:          DQN learning rate (None → config.LEARNING_RATE=0.001)
+        batch_size:             Mini-batch size (None → config.BATCH_SIZE=128)
         seed:                   Random seed for reproducibility
         results_dir:            Directory for results
         checkpoints_dir:        Directory for checkpoints
@@ -103,17 +106,21 @@ def train_dqn(
         enable_diagnostics=enable_diagnostics
     )
 
-    # Initialize DQN agent
+    # Resolve defaults from config
+    lr         = learning_rate if learning_rate is not None else config.LEARNING_RATE
+    batch      = batch_size    if batch_size    is not None else config.BATCH_SIZE
+
+    # Initialize DQN agent (v3)
     agent = DQNAgent(
         state_dim=config.STATE_DIM,
         action_dim=config.ACTION_DIM,
-        learning_rate=learning_rate,
+        learning_rate=lr,
         gamma=config.GAMMA,
         epsilon_start=config.EPSILON_START,
         epsilon_end=config.EPSILON_END,
         epsilon_decay=config.EPSILON_DECAY,
         replay_capacity=config.REPLAY_BUFFER_SIZE,
-        batch_size=config.BATCH_SIZE,
+        batch_size=batch,
         target_update_freq=config.TARGET_UPDATE_FREQ
     )
 
@@ -134,15 +141,18 @@ def train_dqn(
     all_q_values = []
 
     print("=" * 80)
-    print("DQN TRAINING START (v2 — fixed early stopping & reward balance)")
+    print("DQN TRAINING START (v3 — Dueling DQN + PER + Double DQN + Cosine LR)")
     print("=" * 80)
     print(f"Device:                  {agent.device}")
+    print(f"Architecture:            DuelingQNetwork  {config.HIDDEN_LAYERS} shared")
     print(f"Max episodes:            {max_episodes}")
     print(f"Reward scale:            {reward_scale}")
-    print(f"Learning rate:           {learning_rate}")
-    print(f"Epsilon decay:           {config.EPSILON_DECAY}  (→ 0.05 by ~ep 3500)")
-    print(f"Replay buffer:           {config.REPLAY_BUFFER_SIZE:,} transitions")
+    print(f"Learning rate:           {lr}  (CosineAnnealingWarmRestarts T0={config.LR_SCHEDULER_T0})")
+    print(f"Batch size:              {batch}")
+    print(f"Epsilon decay:           {config.EPSILON_DECAY}  (→ 0.05 ~ep 5000)")
+    print(f"Replay buffer:           {config.REPLAY_BUFFER_SIZE:,} transitions  [PER α={config.PER_ALPHA}]")
     print(f"Min replay size:         {min_replay_size}")
+    print(f"Target update freq:      {config.TARGET_UPDATE_FREQ} steps")
     print(f"Early stopping patience: {early_stopping_patience}")
     print(f"Best-model guard:        episodes ≥ {moving_avg_window}")
     print("=" * 80)
@@ -188,8 +198,8 @@ def train_dqn(
             state = next_state
             timestep += 1
 
-        # Update epsilon after each episode
-        agent.update_epsilon()
+        # Update epsilon + LR scheduler after each episode
+        agent.update_epsilon(episode=episode)
 
         # Compute task metrics
         metrics = env.compute_metrics()
@@ -319,6 +329,6 @@ if __name__ == "__main__":
     summary = train_dqn(
         max_episodes=5000,
         reward_scale=0.1,
-        learning_rate=0.0005,
+        # learning_rate and batch_size default to config values
         seed=42,
     )

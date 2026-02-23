@@ -50,32 +50,41 @@ MAX_DEPENDENCY_DEPTH = 3  # Max depth of task dependency tree
 # DQN HYPERPARAMETERS
 # ============================================================================
 
-# Network Architecture
-STATE_DIM = 88  # 5 workers × 3 + 10 tasks × 4 + 5 skill means + 5 skill vars + 3 global
+# Network Architecture  (v3 — Dueling DQN)
+STATE_DIM = 88  # 5 workers × 3 + 10 tasks × 4 + 5 skill means + 5 skill vars + 3 global + 20-pad
 ACTION_DIM = 140  # 20 tasks × 5 workers + 20 defer + 20 escalate
-HIDDEN_LAYERS = [128, 128]
+HIDDEN_LAYERS = [256, 256]   # v3: wider backbone (was [128,128])
 ACTIVATION = 'relu'
+DUELING_DQN = True          # Enable Dueling architecture (V + A streams)
 
 # Training
-LEARNING_RATE = 0.0005
-GAMMA = 0.95  # Discount factor
-BATCH_SIZE = 64
-REPLAY_BUFFER_SIZE = 50000  # Increased for more diverse experience replay
-MIN_REPLAY_SIZE = 1000  # Start training after this many transitions
-TARGET_UPDATE_FREQ = 100  # Steps between target network updates
+LEARNING_RATE = 0.001        # v3: 2× previous (0.0005); compensates for larger batch
+GAMMA = 0.95                 # Discount factor; effective horizon ≈ 1/(1-γ) = 20 steps
+BATCH_SIZE = 128             # v3: 2× previous (64); improves rare-event coverage
+REPLAY_BUFFER_SIZE = 50000   # Diverse replay for 100-step episodes
+MIN_REPLAY_SIZE = 1000       # Warmup before gradient updates begin
+TARGET_UPDATE_FREQ = 200     # v3: slower sync (was 100) to match wider network scale
 
 # Exploration
 EPSILON_START = 1.0
 EPSILON_END = 0.05
-# Tuned so epsilon reaches 0.05 near episode 3500 of a 5000-ep run:
-# 0.9994^3500 ≈ 0.12 ; close enough with natural floor at EPSILON_END
-EPSILON_DECAY = 0.9994  # Per episode (was 0.995 — decayed too slowly)
+# 0.9997^5000 ≈ 0.22 → floor at EPSILON_END=0.05 naturally around ep 5000
+EPSILON_DECAY = 0.9997       # v3: slower decay (was 0.9994) for 140-action POMDP
 
 # Training Control
-MAX_EPISODES = 5000      # Was 2000 — agent never had time to learn
-CHECKPOINT_FREQ = 100   # Save model every N episodes
-EARLY_STOPPING_PATIENCE = 1000  # Was 200 — stopped before any real learning
-CONVERGENCE_THRESHOLD = 1000  # Max Q-value magnitude (divergence check)
+MAX_EPISODES = 5000
+CHECKPOINT_FREQ = 100
+EARLY_STOPPING_PATIENCE = 1000
+CONVERGENCE_THRESHOLD = 1000  # Max |Q| before divergence warning
+
+# ── Prioritized Experience Replay (PER) ──────────────────────────────────────
+PER_ALPHA = 0.6          # Priority exponent: 0=uniform, 1=fully-prioritised
+PER_BETA_START = 0.4     # IS correction start — anneals to 1.0 by end of training
+PER_BETA_FRAMES = 500000 # Steps over which β is annealed (≈ 100 steps × 5000 eps)
+
+# ── LR Scheduler: CosineAnnealingWarmRestarts ────────────────────────────────
+LR_SCHEDULER_T0 = 500    # Episodes per cosine restart cycle
+LR_SCHEDULER_T_MULT = 1  # Restart multiplier (1 = constant period)
 
 # ============================================================================
 # REWARD FUNCTION WEIGHTS
