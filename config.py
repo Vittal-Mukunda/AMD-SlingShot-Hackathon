@@ -90,20 +90,21 @@ ACTIVATION     = 'relu'
 DUELING_DQN    = True
 
 # Training (tuned for online learning — fewer steps per decision, continuous updates)
-LEARNING_RATE        = 0.0005   # Slightly lower for online stability
+LEARNING_RATE        = 0.0003   # Slightly lower for online stability
 GAMMA                = 0.97     # Longer effective horizon for scheduling
-BATCH_SIZE           = 64       # Smaller batch for online updates (more frequent)
+BATCH_SIZE           = 32       # Small batch for fast online updates
 REPLAY_BUFFER_SIZE   = 30000    # Adequate for online continual learning
-MIN_REPLAY_SIZE      = 512      # Start learning sooner in online mode
-TARGET_UPDATE_FREQ   = 150      # Sync target net every 150 decisions
+MIN_REPLAY_SIZE      = 64       # === CRITICAL FIX: must equal BATCH_SIZE to start training immediately ===
+                                 # was 512 — caused train_steps=0 (buffer never reached threshold)
+TARGET_UPDATE_FREQ   = 100      # Sync target net every 100 decisions (was 150)
 
 # Exploration (per-DECISION decay, not per-episode)
 EPSILON_START  = 1.0
 EPSILON_END    = 0.05
-EPSILON_DECAY  = 0.9995    # Very slow — ~1500 decisions to reach 0.5
+EPSILON_DECAY  = 0.999     # Per-decision decay — reaches 0.5 in ~700 decisions, 0.1 in ~2300
 
-# Phase 2 epsilon (DQN starts with partial exploration)
-EPSILON_PHASE2_START = 0.40  # Start Phase 2 with partially decayed epsilon
+# Phase 2 epsilon (DQN starts with partial exploration already done in Phase 1)
+EPSILON_PHASE2_START = 0.35  # Start Phase 2 with partial exploration
 
 # Prioritized Experience Replay
 PER_ALPHA       = 0.6
@@ -125,28 +126,28 @@ CONVERGENCE_THRESHOLD   = 1000
 # ============================================================================
 
 # Primary reward: task completion
-REWARD_COMPLETION_BASE   = 15.0  # × (priority+1) × quality per completed task
+REWARD_COMPLETION_BASE   = 10.0  # × (priority+1) × quality per completed task
 
 # Idle penalty: incentivise keeping workers busy
-REWARD_IDLE_PENALTY      = -0.4  # per available-but-idle worker per slot
+REWARD_IDLE_PENALTY      = -0.2  # per available-but-idle worker per slot
 
 # Lateness penalty: tasks completed after their deadline
-REWARD_LATENESS_PENALTY  = -2.0  # per slot late at completion
+REWARD_LATENESS_PENALTY  = -1.5  # per slot late at completion
 
-# Overload balance: std-dev of worker loads
-REWARD_OVERLOAD_WEIGHT   = -0.15
+# Overload balance: std-dev of worker loads (stronger penalty → meaningful gradient)
+REWARD_OVERLOAD_WEIGHT   = -0.5  # was -0.15; stronger signal against load imbalance
 
 # Deadline urgency: unstarted tasks with very little time left
 REWARD_URGENCY_PENALTY   = -0.3  # per unstarted task with ≤ 4 slots to deadline
 
 # Terminal bonus: awarded when ALL tasks are completed
-REWARD_MAKESPAN_BONUS    = 100.0  # Spread over remaining slots (inverse of time used)
+REWARD_MAKESPAN_BONUS    = 50.0  # reduced from 100 to keep gradient scale manageable
 
 # Step delay: small constant nudge to act quickly
-REWARD_DELAY_WEIGHT      = -0.05
+REWARD_DELAY_WEIGHT      = -0.02  # reduced to not dominate early learning
 
 # Deadline miss: one-shot penalty per deadline miss
-REWARD_DEADLINE_MISS_PENALTY = -15.0
+REWARD_DEADLINE_MISS_PENALTY = -10.0  # was -15; keep in proportion with completion reward
 
 # Legacy (kept for compat)
 REWARD_THROUGHPUT_WEIGHT  = 2.0

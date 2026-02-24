@@ -267,11 +267,13 @@ class DQNAgent:
         )
 
         # ── Stats ─────────────────────────────────────────────────────────────
-        self.steps_done   = 0    # Total decisions taken (including passive)
-        self.train_steps  = 0    # Gradient updates applied
-        self.last_loss    = 0.0
-        self.last_q_mean  = 0.0
-        self.last_td_error= 0.0
+        self.steps_done    = 0    # Total decisions taken (including passive)
+        self.train_steps   = 0    # Gradient updates applied
+        self.train_skipped = 0    # Times training was skipped (buffer not warm)
+        self.last_loss     = 0.0
+        self.last_q_mean   = 0.0
+        self.last_td_error = 0.0
+        self.debug_training = False  # Set True for verbose per-step training logs
 
     # ── Action selection ──────────────────────────────────────────────────────
 
@@ -308,34 +310,46 @@ class DQNAgent:
     # ── Online step (Phase 2 convenience wrapper) ─────────────────────────────
 
     def online_step(self, state: np.ndarray, valid_actions: List[int],
-                    env, greedy: bool = False) -> Tuple[int, float, np.ndarray, bool, float, float]:
+                    env, greedy: bool = False,
+                    train_every: int = 1) -> Tuple[int, float, np.ndarray, bool, float, float]:
         """
         Full online learning step:
-          1. Select action (ε-greedy)
-          2. Execute in env
-          3. Store transition
-          4. Run train_step() if replay buffer is warm
-          5. Decay epsilon
+          1. Select action (ε-greedy with masking)
+          2. Execute in env → get (next_state, reward, done)
+          3. Store transition in PER buffer
+          4. Train every `train_every` decisions if buffer is warm
+          5. Decay epsilon per decision
           6. Return (action, reward, next_state, done, loss, q_mean)
 
-        Args:
-            state        : Current state
-            valid_actions: Valid action indices
-            env          : ProjectEnv instance
-            greedy       : Force greedy action (evaluation mode)
+        Debug: set agent.debug_training=True for per-step console logs.
         """
         action                       = self.select_action(state, valid_actions, greedy=greedy)
         next_state, reward, done, _  = env.step(action)
 
-        self.store_transition(state, action, reward, next_state, float(done))
+        # Defensive copy — ensure state and next_state differ (not aliased)
+        state_copy      = np.array(state,      dtype=np.float32)
+        next_state_copy = np.array(next_state, dtype=np.float32)
+        self.store_transition(state_copy, action, reward, next_state_copy, float(done))
         self.steps_done += 1
 
+        buf_size = len(self.replay_buffer)
         loss, q_mean, td_err = 0.0, 0.0, 0.0
-        if len(self.replay_buffer) >= self.min_replay_size:
+
+        if buf_size >= self.min_replay_size and (self.steps_done % train_every == 0):
+            # === TRAINING TRIGGER ===
             loss, q_mean, td_err = self.train_step()
+            if self.debug_training and self.train_steps % 10 == 0:
+                print(f"    [DQN-TRAIN] step={self.steps_done}, buf={buf_size}, "
+                      f"loss={loss:.4f}, Q={q_mean:.3f}, "
+                      f"ε={self.epsilon:.4f}, train_steps={self.train_steps}")
+        else:
+            self.train_skipped += 1
+            if self.debug_training and self.train_skipped <= 5:
+                print(f"    [DQN-SKIP] buf={buf_size} < min={self.min_replay_size} "
+                      f"(need {self.min_replay_size - buf_size} more transitions)")
 
         self.update_epsilon()
-        return action, reward, next_state, done, loss, q_mean
+        return action, reward, next_state_copy, done, loss, q_mean
 
     # ── Gradient update ───────────────────────────────────────────────────────
 
@@ -343,7 +357,9 @@ class DQNAgent:
         """
         One mini-batch gradient update (Double DQN + PER IS-weights + Huber loss).
 
-        Returns: (loss, mean_q, mean_td_error)
+        Always call after len(replay_buffer) >= batch_size.
+        Increments self.train_steps on success.
+        Returns: (loss, mean_q_pred, mean_td_error)
         """
         if len(self.replay_buffer) < self.batch_size:
             return 0.0, 0.0, 0.0
@@ -358,29 +374,37 @@ class DQNAgent:
         dones       = torch.FloatTensor(dones).to(self.device)
         is_weights  = torch.FloatTensor(is_weights).to(self.device)
 
-        # Current Q
+        # Current Q-values: Q(s, a) from policy net
+        self.policy_net.train()
         current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # Double DQN target
+        # Double DQN target: action selected by policy net, value from target net
         with torch.no_grad():
-            next_a  = self.policy_net(next_states).argmax(dim=1, keepdim=True)
-            next_q  = self.target_net(next_states).gather(1, next_a).squeeze(1)
-            target_q = rewards + (1.0 - dones) * self.gamma * next_q
+            self.target_net.eval()
+            next_a    = self.policy_net(next_states).argmax(dim=1, keepdim=True)
+            next_q    = self.target_net(next_states).gather(1, next_a).squeeze(1)
+            target_q  = rewards + (1.0 - dones) * self.gamma * next_q
 
-        td_errors = (target_q - current_q).detach().cpu().numpy()
-        loss_elem = self.criterion(current_q, target_q)
-        loss      = (is_weights * loss_elem).mean()
+        # Huber loss weighted by PER importance-sampling weights
+        td_errors  = (target_q - current_q).detach().cpu().numpy()
+        loss_elem  = self.criterion(current_q, target_q)   # element-wise Huber
+        loss       = (is_weights * loss_elem).mean()
 
         if torch.isnan(loss):
+            if self.debug_training:
+                print(f"    [DQN-WARN] NaN loss detected at train_step={self.train_steps}")
             return float('nan'), float('nan'), float('nan')
 
+        # Gradient step
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10.0)
 
         # NaN gradient guard
         if any(p.grad is not None and torch.isnan(p.grad).any()
                for p in self.policy_net.parameters()):
+            if self.debug_training:
+                print(f"    [DQN-WARN] NaN gradient at train_step={self.train_steps}")
             self.optimizer.zero_grad()
             return float('nan'), float('nan'), float('nan')
 
@@ -390,11 +414,14 @@ class DQNAgent:
         self.train_steps  += 1
         self.last_loss     = float(loss.item())
         self.last_q_mean   = float(current_q.mean().item())
+        self.last_q_target = float(target_q.mean().item())
         self.last_td_error = float(np.abs(td_errors).mean())
 
-        # Sync target net
+        # Periodic target network sync (NOT every step — prevents Bellman collapse)
         if self.train_steps % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
+            if self.debug_training:
+                print(f"    [DQN-TARGET] Synced target net at train_step={self.train_steps}")
 
         return self.last_loss, self.last_q_mean, self.last_td_error
 

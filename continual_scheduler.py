@@ -110,13 +110,15 @@ def _print_day_header(phase: int, day: int, tick: int):
 def _print_decision_log(tick: int, phase: int, decision_n: int,
                         action: int, reward: float, epsilon: float,
                         loss: float = 0.0, q_mean: float = 0.0,
-                        policy_name: str = "?"):
-    if decision_n % 100 == 0:
-        print(f"  ⟳ [P{phase}] tick={tick:>5}, dec={decision_n:>6}, "
+                        policy_name: str = "?", train_steps: int = 0):
+    # Log every 20 decisions in Phase 2 (for visible training progress)
+    interval = 20 if phase == 2 else 50
+    if decision_n % interval == 0 or decision_n == 1:
+        train_tag = f" | trained={train_steps}" if phase == 2 else ""
+        print(f"  [{phase}] tick={tick:>4}, dec={decision_n:>5}, "
               f"a={action:>3}, r={reward:>+6.2f}, "
-              f"ε={epsilon:.3f}, "
-              f"loss={loss:.4f}, Q={q_mean:.3f}, "
-              f"policy={policy_name}")
+              f"eps={epsilon:.3f}, loss={loss:.4f}, Q={q_mean:.3f}"
+              f"{train_tag}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -257,8 +259,9 @@ def run_phase2(env: ProjectEnv, agent: DQNAgent, args) -> List[Dict]:
             _print_day_header(2, current_day - 1, env.clock.tick)
             print(f"    throughput/day={m['throughput_per_day']:.2f}, "
                   f"completion={m['completion_rate']:.2%}, "
-                  f"ε={agent.epsilon:.3f}, "
-                  f"loss={m['mean_loss']:.4f}, Q={m['mean_q']:.3f}")
+                  f"eps={agent.epsilon:.3f}, "
+                  f"loss={m['mean_loss']:.4f}, Q={m['mean_q']:.3f}, "
+                  f"train_steps={agent.train_steps}, skipped={agent.train_skipped}")
 
             # Checkpoint if best
             if m['throughput_per_day'] > best_throughput:
@@ -277,11 +280,13 @@ def run_phase2(env: ProjectEnv, agent: DQNAgent, args) -> List[Dict]:
             continue
 
         # DQN online_step: select → execute → store → learn → decay ε
-        action, reward, next_state, done, loss, q_mean = agent.online_step(state, valid, env)
+        action, reward, next_state, done, loss, q_mean = agent.online_step(
+            state, valid, env, train_every=1
+        )
 
         _print_decision_log(env.clock.tick, 2, total_decisions + 1,
                             action, reward, agent.epsilon, loss, q_mean,
-                            policy_name="DQN")
+                            policy_name="DQN", train_steps=agent.train_steps)
 
         if not np.isnan(loss):
             day_losses.append(loss)
@@ -382,6 +387,8 @@ def main():
                         help='Run Phase 1 only')
     parser.add_argument('--phase2-only', action='store_true',
                         help='Run Phase 2 only (requires checkpoint)')
+    parser.add_argument('--debug-training', action='store_true',
+                        help='Enable verbose per-step DQN training logs')
     args = parser.parse_args()
 
     if args.debug_skill:
@@ -390,8 +397,8 @@ def main():
     if args.smoke_test:
         args.days_p1 = 2
         args.days_p2 = 3
-        args.tasks   = 40
-        print("🔥 Smoke-test mode: 2+3 days, 40 tasks")
+        args.tasks   = 60   # increased for fuller buffer warm-up
+        print(f"🔥 Smoke-test mode: {args.days_p1}+{args.days_p2} days, {args.tasks} tasks")
 
     # Override phase days in config for env slot calculation
     config.PHASE1_DAYS   = args.days_p1
@@ -417,8 +424,15 @@ def main():
 
     # ── Build DQN agent ──────────────────────────────────────────────────────
     agent = DQNAgent()
+    if hasattr(args, 'debug_training') and args.debug_training:
+        agent.debug_training = True
     if args.load_checkpoint and os.path.exists(args.load_checkpoint):
         agent.load(args.load_checkpoint)
+
+    print(f"  [Agent] device={agent.device}, batch={agent.batch_size}, "
+          f"min_replay={agent.min_replay_size}, "
+          f"buf_capacity={agent.replay_buffer.tree.capacity}")
+
 
     # ── Run phases ───────────────────────────────────────────────────────────
     p1_metrics, p2_metrics = [], []
