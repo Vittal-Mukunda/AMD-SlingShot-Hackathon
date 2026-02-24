@@ -33,10 +33,9 @@ class HybridBaseline(BasePolicy):
     def __init__(self, env: ProjectEnv):
         super().__init__(env)
         self.name = "Hybrid"
-        
-        # Maintain running skill estimates (updated online)
+        # Welford running skill estimates (no list accumulation)
         self.skill_estimates = {i: 1.0 for i in range(env.num_workers)}
-        self.skill_observations = {i: [] for i in range(env.num_workers)}
+        self._skill_counts   = {i: 0   for i in range(env.num_workers)}
     
     def select_action(self, state) -> int:
         """
@@ -63,11 +62,12 @@ class HybridBaseline(BasePolicy):
         LOAD_COEFF   = 0.40   # Each extra active task costs 0.4 skill points in score
         FATIGUE_COEFF = 0.25  # Each unit of current fatigue costs 0.25 skill points
 
-        # Get pending tasks
+        # Get pending tasks — only those already arrived (zero lookahead)
+        tick          = self.env.clock.tick
         completed_ids = [t.task_id for t in self.env.completed_tasks]
         pending_tasks = [
             t for t in self.env.tasks
-            if not t.is_completed and not t.is_failed and t.assigned_worker is None
+            if t.is_available(tick) and t.is_unassigned()
             and t.check_dependencies_met(completed_ids)
         ]
 
@@ -77,7 +77,7 @@ class HybridBaseline(BasePolicy):
         # Sort tasks by hybrid urgency: priority × 10 + deadline_urgency
         pending_tasks = sorted(
             pending_tasks,
-            key=lambda t: -(t.priority * 10 + t.get_deadline_urgency(self.env.current_timestep))
+            key=lambda t: -(t.priority * 10 + t.get_deadline_urgency(tick))
         )
 
         selected_task = pending_tasks[0]
@@ -111,67 +111,53 @@ class HybridBaseline(BasePolicy):
 
     
     def _update_skill_estimates(self):
-        """
-        Update skill estimates from worker completion history (online learning)
-        """
+        """Update skill estimates using Welford online mean (no list growth bias)."""
         for worker in self.env.workers:
-            if len(worker.completion_history) > len(self.skill_observations[worker.worker_id]):
-                # New completions since last update
-                new_completions = worker.completion_history[len(self.skill_observations[worker.worker_id]):]
-                
-                for complexity, time, quality in new_completions:
-                    # Estimate skill from completion time
-                    # skill ≈ complexity / (time / fatigue_correction)
-                    estimated_skill = complexity / time * 1.25  # Rough fatigue correction
-                    self.skill_observations[worker.worker_id].append(estimated_skill)
-                
-                # Update running average
-                if len(self.skill_observations[worker.worker_id]) > 0:
-                    self.skill_estimates[worker.worker_id] = np.mean(
-                        self.skill_observations[worker.worker_id]
-                    )
+            mean_est, _ = worker.get_skill_estimate()
+            if mean_est > 0:
+                n = self._skill_counts[worker.worker_id] + 1
+                self._skill_counts[worker.worker_id] = n
+                old = self.skill_estimates.get(worker.worker_id, 1.0)
+                if isinstance(old, list):
+                    old = float(np.mean(old)) if old else 1.0
+                self.skill_estimates[worker.worker_id] = old + (mean_est - old) / n
     
     def reset(self):
-        """
-        Reset skill estimates for new episode
-        """
-        # Keep learned estimates across episodes (like a real manager would)
+        """Keep skill estimates across episodes — accumulated knowledge persists."""
         pass
+
+    def encode_action(self, task_id: int, worker_id: int = -1, action_type: str = 'assign') -> int:
+        """v4-compatible encode using visible-task slot indexing."""
+        num_tasks   = 20
+        num_workers = self.env.num_workers
+        tick        = self.env.clock.tick
+        visible = [t for t in self.env.tasks if t.is_available(tick) and t.is_unassigned()]
+        visible.sort(key=lambda t: -t.get_deadline_urgency(tick))
+        visible = visible[:num_tasks]
+        task_slot = next((i for i, t in enumerate(visible) if t.task_id == task_id), 0)
+        if action_type == 'assign':
+            return task_slot * num_workers + worker_id
+        elif action_type == 'defer':
+            return num_tasks * num_workers + task_slot
+        return num_tasks * num_workers
 
 
 if __name__ == "__main__":
-    # Unit test
-    print("Testing HybridBaseline (TARGET TO BEAT)...")
-    
+    print("Testing HybridBaseline v4...")
     from environment.project_env import ProjectEnv
-    
-    env = ProjectEnv(num_workers=5, num_tasks=20, seed=42)
+    env    = ProjectEnv(num_workers=5, total_tasks=40, seed=42)
     policy = HybridBaseline(env)
-    
-    # Run multiple episodes to test adaptation
-    total_rewards = []
-    deadline_hits = []
-    
-    for ep in range(5):
-        state = env.reset()
-        total_reward = 0
-        
-        for t in range(100):
-            action = policy.select_action(state)
-            state, reward, done, info = env.step(action)
-            total_reward += reward
-            
-            if done:
-                break
-        
-        metrics = env.compute_metrics()
-        total_rewards.append(total_reward)
-        deadline_hits.append(metrics['deadline_hit_rate'])
-        
-        print(f"Episode {ep+1}: reward={total_reward:.1f}, deadline_hit={metrics['deadline_hit_rate']:.2f}, "
-              f"throughput={metrics['throughput']}, quality={metrics['quality_score']:.2f}")
-    
-    print(f"\n✓ Hybrid policy (target): avg_reward={np.mean(total_rewards):.1f}, "
-          f"avg_deadline_hit={np.mean(deadline_hits):.2f}")
-    print("HybridBaseline test passed!")
-    print("\n** RL MUST BEAT THIS BY ≥15% ON COMPOSITE SCORE **")
+    state  = env.reset()
+    total  = 0.0
+    for _ in range(200):
+        valid  = env.get_valid_actions()
+        action = policy.select_action(state)
+        if valid and action not in valid:
+            action = valid[0]
+        state, r, done, _ = env.step(action)
+        total += r
+        if done:
+            break
+    m = env.compute_metrics()
+    print(f"✓ Hybrid: reward={total:.1f}, throughput={m['throughput']}, completion={m['completion_rate']:.2%}")
+    print("HybridBaseline v4 passed!")

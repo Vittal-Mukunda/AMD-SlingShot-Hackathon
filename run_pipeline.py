@@ -2,14 +2,20 @@
 run_pipeline.py — End-to-end pipeline orchestrator for RL-Driven Agentic Project Manager.
 
 Usage:
-    python run_pipeline.py --full                  # Run entire pipeline
-    python run_pipeline.py --train                 # Train DQN only
+    python run_pipeline.py --online                # *** RECOMMENDED *** Continual online learning
+    python run_pipeline.py --full                  # Full train-then-run pipeline (legacy)
+    python run_pipeline.py --train                 # Train DQN only (legacy)
     python run_pipeline.py --baselines             # Run baselines only
     python run_pipeline.py --evaluate              # Evaluate RL agent only
     python run_pipeline.py --stats                 # Statistical tests only
     python run_pipeline.py --plots                 # Generate all plots
     python run_pipeline.py --train --episodes 500  # Train with 500 episodes
     python run_pipeline.py --full --seed 99        # Full pipeline with seed 99
+
+Online mode options:
+    python run_pipeline.py --online --days-p1 10 --days-p2 15
+    python run_pipeline.py --online --smoke-test        # Quick 2+3 day test
+    python run_pipeline.py --online --debug-skill       # Enable skill baseline logging
 """
 
 import argparse
@@ -256,12 +262,24 @@ Examples:
     )
 
     # Pipeline stage flags
-    parser.add_argument('--full',      action='store_true', help='Run entire pipeline end-to-end')
-    parser.add_argument('--train',     action='store_true', help='Run DQN training')
+    parser.add_argument('--online',    action='store_true',
+                        help='*** RECOMMENDED *** Continual online learning (two-phase DQN)')
+    parser.add_argument('--full',      action='store_true', help='Run entire pipeline end-to-end (legacy)')
+    parser.add_argument('--train',     action='store_true', help='Run DQN training (legacy)')
     parser.add_argument('--baselines', action='store_true', help='Run baseline evaluations')
     parser.add_argument('--evaluate',  action='store_true', help='Evaluate trained RL agent')
     parser.add_argument('--stats',     action='store_true', help='Run statistical tests')
     parser.add_argument('--plots',     action='store_true', help='Generate plots')
+
+    # Online mode options
+    parser.add_argument('--days-p1',     type=int,   default=config.PHASE1_DAYS,
+                        help=f'Phase 1 working days (default: {config.PHASE1_DAYS})')
+    parser.add_argument('--days-p2',     type=int,   default=config.PHASE2_DAYS,
+                        help=f'Phase 2 working days (default: {config.PHASE2_DAYS})')
+    parser.add_argument('--smoke-test',  action='store_true',
+                        help='Fast smoke test (2+3 days, 40 tasks)')
+    parser.add_argument('--debug-skill', action='store_true',
+                        help='Verbose skill baseline assignment logs')
 
     # Runtime overrides
     parser.add_argument('--episodes',          type=int,   default=config.TRAIN_EPISODES,
@@ -278,6 +296,22 @@ Examples:
                         help=f'Frequent-shock probability (default: {config.TEST_SHOCK_PROB_HIGH})')
 
     args = parser.parse_args()
+
+    # ── Online learning mode (recommended primary mode) ──────────────────────
+    if args.online:
+        import subprocess
+        cmd = [sys.executable, os.path.join(PROJECT_ROOT, 'continual_scheduler.py'),
+               '--seed', str(args.seed),
+               '--days-p1', str(args.days_p1),
+               '--days-p2', str(args.days_p2)]
+        if args.smoke_test:
+            cmd.append('--smoke-test')
+        if args.debug_skill:
+            cmd.append('--debug-skill')
+        print(f"  Delegating to continual_scheduler.py ...")
+        print(f"  Command: {' '.join(cmd)}")
+        result = subprocess.run(cmd)
+        sys.exit(result.returncode)
 
     # Apply CLI overrides to config so downstream modules pick them up
     if args.variance_mult != config.TEST_VARIANCE_MULTIPLIER:

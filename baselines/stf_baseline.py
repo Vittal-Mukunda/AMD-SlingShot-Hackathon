@@ -40,62 +40,57 @@ class STFBaseline(BasePolicy):
         Returns:
             Action index
         """
-        # Get pending tasks and sort by complexity (ascending)
+        tick          = self.env.clock.tick
         completed_ids = [t.task_id for t in self.env.completed_tasks]
         pending_tasks = [
-            t for t in self.env.tasks 
-            if not t.is_completed and not t.is_failed and t.assigned_worker is None
+            t for t in self.env.tasks
+            if t.is_available(tick) and t.is_unassigned()
             and t.check_dependencies_met(completed_ids)
         ]
-        
-        if len(pending_tasks) == 0:
+        if not pending_tasks:
             return self.encode_action(0, action_type='defer')
-        
-        # Sort by complexity (ascending)
-        pending_tasks = sorted(pending_tasks, key=lambda t: t.complexity)
-        
-        # Get available workers sorted by load
+        # Sort by complexity (ascending — shortest first)
+        pending_tasks.sort(key=lambda t: t.complexity)
         available_workers = [w for w in self.env.workers if w.availability == 1]
-        
-        if len(available_workers) == 0:
+        if not available_workers:
             return self.encode_action(pending_tasks[0].task_id, action_type='defer')
-        
-        available_workers = sorted(available_workers, key=lambda w: w.load)
-        
-        # Assign easiest task to least loaded worker
-        selected_task = pending_tasks[0]
-        selected_worker = available_workers[0]
-        
-        return self.encode_action(selected_task.task_id, selected_worker.worker_id, 'assign')
+        available_workers.sort(key=lambda w: w.load)
+        return self.encode_action(pending_tasks[0].task_id, available_workers[0].worker_id, 'assign')
     
-    # Note: typo fix - should be select_action, not select
     def select_action(self, state) -> int:
         return self.select(state)
 
+    def encode_action(self, task_id: int, worker_id: int = -1, action_type: str = 'assign') -> int:
+        num_tasks   = 20
+        num_workers = self.env.num_workers
+        tick        = self.env.clock.tick
+        visible = [t for t in self.env.tasks if t.is_available(tick) and t.is_unassigned()]
+        visible.sort(key=lambda t: t.complexity)
+        visible = visible[:num_tasks]
+        task_slot = next((i for i, t in enumerate(visible) if t.task_id == task_id), 0)
+        if action_type == 'assign':
+            return task_slot * num_workers + worker_id
+        elif action_type == 'defer':
+            return num_tasks * num_workers + task_slot
+        return num_tasks * num_workers
+
 
 if __name__ == "__main__":
-    # Unit test
-    print("Testing STFBaseline...")
-    
+    print("Testing STFBaseline v4...")
     from environment.project_env import ProjectEnv
-    
-    env = ProjectEnv(num_workers=5, num_tasks=20, seed=42)
+    env    = ProjectEnv(num_workers=5, total_tasks=40, seed=42)
     policy = STFBaseline(env)
-    
-    state = env.reset()
-    total_reward = 0
-    
-    for t in range(100):
+    state  = env.reset()
+    total  = 0.0
+    for _ in range(200):
+        valid  = env.get_valid_actions()
         action = policy.select_action(state)
-        state, reward, done, info = env.step(action)
-        total_reward += reward
-        
+        if valid and action not in valid:
+            action = valid[0]
+        state, r, done, _ = env.step(action)
+        total += r
         if done:
-            print(f"Episode ended at t={t}, reason={info['termination_reason']}")
             break
-    
-    metrics = env.compute_metrics()
-    print(f"✓ STF policy: reward={total_reward:.1f}, throughput={metrics['throughput']}, "
-          f"deadline_hit={metrics['deadline_hit_rate']:.2f}")
-    
-    print("STFBaseline test passed!")
+    m = env.compute_metrics()
+    print(f"✓ STF: reward={total:.1f}, throughput={m['throughput']}, completion={m['completion_rate']:.2%}")
+    print("STFBaseline v4 passed!")

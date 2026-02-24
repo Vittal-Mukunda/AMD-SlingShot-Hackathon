@@ -1,157 +1,193 @@
 """
 Configuration file for RL-Driven Agentic Project Manager
 Contains all hyperparameters and environment settings
+
+v4 — Continual Online Learning Framework
+  * Workday simulation: 8h/day, 5-day week, slot-based clock
+  * Dynamic Poisson task arrivals (no lookahead for any agent)
+  * Heterogeneous workers with per-worker fatigue sensitivity
+  * Two-phase adaptive framework: Phase 1 (baseline obs) → Phase 2 (DQN control)
+  * State dim updated to 96 (was 88)
 """
 
 # ============================================================================
-# ENVIRONMENT CONFIGURATION
+# WORKDAY SIMULATION
 # ============================================================================
 
-# Workers
-NUM_WORKERS = 5
-MAX_WORKER_LOAD = 5  # Maximum concurrent tasks per worker
-FATIGUE_LEVELS = 4  # 0: fresh, 1: tired, 2: exhausted, 3: burnout
-BURNOUT_RECOVERY_TIME = 5  # Timesteps worker unavailable after burnout
+SLOT_HOURS         = 0.5     # Each time slot = 30 minutes
+SLOTS_PER_DAY      = 16      # 8-hour workday (09:00–17:00)
+WORK_DAYS_PER_WEEK = 5       # Mon–Fri
+WORK_START_SLOT    = 0       # Slot 0 = 09:00 within each day
+WORK_END_SLOT      = 15      # Slot 15 = last slot of 09:00–17:00 window
 
-# Worker Skills (Hidden)
-SKILL_MIN = 0.6
-SKILL_MAX = 1.4
-SKILL_PRIOR_ALPHA = 2.0  # Beta distribution prior for belief state
-SKILL_PRIOR_BETA = 2.0
+# Two-phase framework durations
+PHASE1_DAYS   = 10           # Phase 1: 2 working weeks (baseline-driven + passive DQN)
+PHASE2_DAYS   = 15           # Phase 2: 3 working weeks (DQN-controlled with online learning)
+TOTAL_SIM_DAYS = PHASE1_DAYS + PHASE2_DAYS   # 25 working days total
 
-# Tasks
-NUM_TASKS = 20
-TASK_COMPLEXITY_LEVELS = [1, 2, 3, 4, 5]  # Difficulty levels
-TASK_PRIORITIES = [0, 1, 2, 3]  # low, medium, high, critical
-DEADLINE_MIN = 20
-DEADLINE_MAX = 60
+# ============================================================================
+# WORKERS
+# ============================================================================
 
-# Episode
-EPISODE_HORIZON = 100  # Max timesteps per episode
-FAILURE_THRESHOLD = 0.5  # 50% deadline miss rate triggers early termination
+NUM_WORKERS        = 5
+MAX_WORKER_LOAD    = 5       # Max concurrent tasks per worker
+FATIGUE_LEVELS     = 4       # 0:fresh 1:tired 2:exhausted 3:burnout
+BURNOUT_RECOVERY_TIME = 8    # Slots unavailable after burnout (~4 hours)
 
-# Dynamics
-FATIGUE_ACCUMULATION_RATE = 0.2  # Fatigue increase when overloaded
-FATIGUE_RECOVERY_RATE = 0.1  # Fatigue decrease when idle
-FATIGUE_THRESHOLD = 2.5  # Burnout threshold
-OVERLOAD_THRESHOLD = 3  # Load > this triggers accelerated fatigue
+# Worker skill range (hidden from agents)
+SKILL_MIN = 0.5
+SKILL_MAX = 1.5
+SKILL_PRIOR_ALPHA = 2.0
+SKILL_PRIOR_BETA  = 2.0
 
-# Stochasticity
-COMPLETION_TIME_NOISE = 0.3  # Std dev as fraction of expected time
-DEADLINE_SHOCK_PROB = 0.15  # Probability of deadline shock per episode
-DEADLINE_SHOCK_AMOUNT = 10  # Timesteps reduced from deadline
-TASK_FAILURE_PROB_BASE = 0.3  # Base failure probability when overloaded (load > 4)
+# Worker heterogeneity params (all hidden, per-worker, sampled at init)
+SPEED_MULT_MEAN     = 1.0    # Processing speed multiplier around 1.0
+SPEED_MULT_STD      = 0.20   # ±20% variation
+FATIGUE_RATE_MEAN   = 0.20   # Fatigue accumulation rate
+FATIGUE_RATE_STD    = 0.06
+RECOVERY_RATE_MEAN  = 0.12   # Recovery rate when idle
+RECOVERY_RATE_STD   = 0.04
+FATIGUE_SENS_MEAN   = 0.18   # How much fatigue hurts productivity
+FATIGUE_SENS_STD    = 0.05
+BURNOUT_RESIL_MEAN  = 2.6    # Burnout threshold (fatigue ≥ this → burnout)
+BURNOUT_RESIL_STD   = 0.25
+
+# Intra-day performance decay: quality drops slightly as hours_worked increases
+INTRADAY_DECAY_RATE = 0.03   # Quality × (1 - rate × hours_worked_today)
+FATIGUE_CARRYOVER   = 0.10   # Fraction of fatigue carried over to next day
+
+# ============================================================================
+# TASKS & ARRIVAL PROCESS
+# ============================================================================
+
+TASK_ARRIVAL_RATE    = 3.5   # Mean tasks arriving per working day (Poisson)
+TOTAL_TASKS          = 200   # Total tasks across entire simulation
+MIN_TASK_DURATION_H  = 1.0   # Minimum task duration in hours
+MAX_TASK_DURATION_H  = 12.0  # Maximum task duration in hours
+TASK_COMPLEXITY_LEVELS = [1, 2, 3, 4, 5]   # Difficulty levels
+TASK_PRIORITIES      = [0, 1, 2, 3]         # low, medium, high, critical
+DEADLINE_MIN_H       = 4.0   # Minimum deadline in hours (8 slots)
+DEADLINE_MAX_H       = 40.0  # Maximum deadline in hours (80 slots)
+COMPLETION_TIME_NOISE = 0.25 # Std dev as fraction of expected time
 
 # Dependencies
-DEPENDENCY_GRAPH_COMPLEXITY = 3  # Number of dependency chains
-MAX_DEPENDENCY_DEPTH = 3  # Max depth of task dependency tree
+DEPENDENCY_GRAPH_COMPLEXITY = 4
+MAX_DEPENDENCY_DEPTH        = 3
+
+# Stochasticity
+DEADLINE_SHOCK_PROB   = 0.08  # Probability of a deadline shock per slot
+DEADLINE_SHOCK_SLOTS  = 8     # Slots removed from deadline per shock
 
 # ============================================================================
-# DQN HYPERPARAMETERS
+# DQN HYPERPARAMETERS  (v4 — Online Learning)
 # ============================================================================
 
-# Network Architecture  (v3 — Dueling DQN)
-STATE_DIM = 88  # 5 workers × 3 + 10 tasks × 4 + 5 skill means + 5 skill vars + 3 global + 20-pad
-ACTION_DIM = 140  # 20 tasks × 5 workers + 20 defer + 20 escalate
-HIDDEN_LAYERS = [256, 256]   # v3: wider backbone (was [128,128])
-ACTIVATION = 'relu'
-DUELING_DQN = True          # Enable Dueling architecture (V + A streams)
+# Network Architecture (Dueling DQN — PRESERVED from v3)
+STATE_DIM   = 96    # 5 workers × 5 + 10 tasks × 5 + 10 belief + 6 global + 15 pad
+ACTION_DIM  = 140   # 20 tasks × 5 workers + 20 defer + 20 escalate (unchanged)
+HIDDEN_LAYERS  = [256, 256]
+ACTIVATION     = 'relu'
+DUELING_DQN    = True
 
-# Training
-LEARNING_RATE = 0.001        # v3: 2× previous (0.0005); compensates for larger batch
-GAMMA = 0.95                 # Discount factor; effective horizon ≈ 1/(1-γ) = 20 steps
-BATCH_SIZE = 128             # v3: 2× previous (64); improves rare-event coverage
-REPLAY_BUFFER_SIZE = 50000   # Diverse replay for 100-step episodes
-MIN_REPLAY_SIZE = 1000       # Warmup before gradient updates begin
-TARGET_UPDATE_FREQ = 200     # v3: slower sync (was 100) to match wider network scale
+# Training (tuned for online learning — fewer steps per decision, continuous updates)
+LEARNING_RATE        = 0.0005   # Slightly lower for online stability
+GAMMA                = 0.97     # Longer effective horizon for scheduling
+BATCH_SIZE           = 64       # Smaller batch for online updates (more frequent)
+REPLAY_BUFFER_SIZE   = 30000    # Adequate for online continual learning
+MIN_REPLAY_SIZE      = 512      # Start learning sooner in online mode
+TARGET_UPDATE_FREQ   = 150      # Sync target net every 150 decisions
 
-# Exploration
-EPSILON_START = 1.0
-EPSILON_END = 0.05
-# 0.9997^5000 ≈ 0.22 → floor at EPSILON_END=0.05 naturally around ep 5000
-EPSILON_DECAY = 0.9997       # v3: slower decay (was 0.9994) for 140-action POMDP
+# Exploration (per-DECISION decay, not per-episode)
+EPSILON_START  = 1.0
+EPSILON_END    = 0.05
+EPSILON_DECAY  = 0.9995    # Very slow — ~1500 decisions to reach 0.5
 
-# Training Control
-MAX_EPISODES = 5000
-CHECKPOINT_FREQ = 100
+# Phase 2 epsilon (DQN starts with partial exploration)
+EPSILON_PHASE2_START = 0.40  # Start Phase 2 with partially decayed epsilon
+
+# Prioritized Experience Replay
+PER_ALPHA       = 0.6
+PER_BETA_START  = 0.4
+PER_BETA_FRAMES = 50000
+
+# LR Scheduler
+LR_SCHEDULER_T0   = 2000   # Steps per cosine restart (longer for online mode)
+LR_SCHEDULER_T_MULT = 1
+
+# Legacy training config (kept for backward compat with --full pipeline)
+MAX_EPISODES            = 5000
+CHECKPOINT_FREQ         = 100
 EARLY_STOPPING_PATIENCE = 1000
-CONVERGENCE_THRESHOLD = 1000  # Max |Q| before divergence warning
-
-# ── Prioritized Experience Replay (PER) ──────────────────────────────────────
-PER_ALPHA = 0.6          # Priority exponent: 0=uniform, 1=fully-prioritised
-PER_BETA_START = 0.4     # IS correction start — anneals to 1.0 by end of training
-PER_BETA_FRAMES = 500000 # Steps over which β is annealed (≈ 100 steps × 5000 eps)
-
-# ── LR Scheduler: CosineAnnealingWarmRestarts ────────────────────────────────
-LR_SCHEDULER_T0 = 500    # Episodes per cosine restart cycle
-LR_SCHEDULER_T_MULT = 1  # Restart multiplier (1 = constant period)
+CONVERGENCE_THRESHOLD   = 1000
 
 # ============================================================================
-# REWARD FUNCTION WEIGHTS
+# REWARD FUNCTION  (Makespan-centric)
 # ============================================================================
 
-# ── Reward Hierarchy (strictly enforced) ─────────────────────────────────────
-# R_t = (+20·Ct) - (20·Dt) - (0.1·St) - (0.1·σt)
-#   Ct = tasks completed this step   (primary objective)
-#   Dt = tasks dropped/missed        (severe gating penalty)
-#   St = step delay sum              (tiny secondary signal)
-#   σt = worker load std-dev         (mild tertiary signal)
-REWARD_COMPLETION_BASE       = 20.0   # +20 × (priority+1) × quality per completed task
-REWARD_DELAY_WEIGHT          = -0.1   # Per step; applied only to the *current* step not sum
-REWARD_OVERLOAD_WEIGHT       = -0.1   # Multiplied by load std-dev (σ), not quadratic overload
-REWARD_THROUGHPUT_WEIGHT     = 2.0    # Legacy; not used in active reward path
-REWARD_DEADLINE_MISS_PENALTY = -20.0  # One-shot hit per dropped / deadline-missed task
+# Primary reward: task completion
+REWARD_COMPLETION_BASE   = 15.0  # × (priority+1) × quality per completed task
 
+# Idle penalty: incentivise keeping workers busy
+REWARD_IDLE_PENALTY      = -0.4  # per available-but-idle worker per slot
 
-# Reward shaping
-REWARD_STRATEGIC_DEFER = 1.0  # Bonus for deferring when no skilled worker
-REWARD_EXPLORATION_BONUS = 0.5  # Bonus for exploring uncertain workers
+# Lateness penalty: tasks completed after their deadline
+REWARD_LATENESS_PENALTY  = -2.0  # per slot late at completion
 
-# Quality calculation
-FATIGUE_QUALITY_PENALTY = 0.3  # Quality multiplier: (1 - 0.3 * fatigue)
+# Overload balance: std-dev of worker loads
+REWARD_OVERLOAD_WEIGHT   = -0.15
+
+# Deadline urgency: unstarted tasks with very little time left
+REWARD_URGENCY_PENALTY   = -0.3  # per unstarted task with ≤ 4 slots to deadline
+
+# Terminal bonus: awarded when ALL tasks are completed
+REWARD_MAKESPAN_BONUS    = 100.0  # Spread over remaining slots (inverse of time used)
+
+# Step delay: small constant nudge to act quickly
+REWARD_DELAY_WEIGHT      = -0.05
+
+# Deadline miss: one-shot penalty per deadline miss
+REWARD_DEADLINE_MISS_PENALTY = -15.0
+
+# Legacy (kept for compat)
+REWARD_THROUGHPUT_WEIGHT  = 2.0
+REWARD_STRATEGIC_DEFER    = 0.5
+REWARD_EXPLORATION_BONUS  = 0.3
+FATIGUE_QUALITY_PENALTY   = 0.25
 
 # ============================================================================
 # BASELINE CONFIGURATION
 # ============================================================================
 
-BASELINE_SKILL_ESTIMATION_EPISODES = 10  # Episodes to observe before using skill estimates
+BASELINE_SKILL_ESTIMATION_EPISODES = 10
+BASELINE_DEBUG_SKILL = False   # Set True to print per-assignment skill logs
 
 # ============================================================================
 # EVALUATION CONFIGURATION
 # ============================================================================
 
-# Training
-TRAIN_EPISODES = 5000
-TRAIN_RANDOM_SEEDS = [42, 123, 456, 789, 1011]
-
-# Testing
-TEST_EPISODES = 200
-TEST_EPISODES_STANDARD = 50
+TRAIN_EPISODES           = 5000
+TRAIN_RANDOM_SEEDS       = [42, 123, 456, 789, 1011]
+TEST_EPISODES            = 200
+TEST_EPISODES_STANDARD   = 50
 TEST_EPISODES_HIGH_VARIANCE = 50
 TEST_EPISODES_FREQUENT_SHOCKS = 50
-TEST_EPISODES_FIXED = 50
-
-# High variance test
+TEST_EPISODES_FIXED      = 50
 TEST_VARIANCE_MULTIPLIER = 1.5
-
-# Frequent shocks test
-TEST_SHOCK_PROB_HIGH = 0.3
-
-# Statistical testing
-SIGNIFICANCE_LEVEL = 0.05
-BONFERRONI_NUM_COMPARISONS = 5  # 5 baselines
-COHEN_D_THRESHOLD = 0.5  # Minimum effect size for "meaningful"
+TEST_SHOCK_PROB_HIGH     = 0.3
+SIGNIFICANCE_LEVEL       = 0.05
+BONFERRONI_NUM_COMPARISONS = 5
+COHEN_D_THRESHOLD        = 0.5
 
 # ============================================================================
-# METRICS WEIGHTS (for composite score)
+# METRICS WEIGHTS
 # ============================================================================
 
-METRIC_WEIGHT_THROUGHPUT = 2.0
-METRIC_WEIGHT_DEADLINE = 3.0
-METRIC_WEIGHT_DELAY = -0.5
+METRIC_WEIGHT_THROUGHPUT   = 2.0
+METRIC_WEIGHT_DEADLINE     = 3.0
+METRIC_WEIGHT_DELAY        = -0.5
 METRIC_WEIGHT_LOAD_BALANCE = -1.0
-METRIC_WEIGHT_QUALITY = 1.0
-METRIC_WEIGHT_OVERLOAD = -2.0
+METRIC_WEIGHT_QUALITY      = 1.0
+METRIC_WEIGHT_OVERLOAD     = -2.0
 
 # ============================================================================
 # PATHS
@@ -159,13 +195,12 @@ METRIC_WEIGHT_OVERLOAD = -2.0
 
 import os
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, 'checkpoints')
-RESULTS_DIR = os.path.join(PROJECT_ROOT, 'results')
-LOGS_DIR = os.path.join(PROJECT_ROOT, 'logs')
-TESTS_DIR = os.path.join(PROJECT_ROOT, 'tests')
+PROJECT_ROOT    = os.path.dirname(os.path.abspath(__file__))
+CHECKPOINT_DIR  = os.path.join(PROJECT_ROOT, 'checkpoints')
+RESULTS_DIR     = os.path.join(PROJECT_ROOT, 'results')
+LOGS_DIR        = os.path.join(PROJECT_ROOT, 'logs')
+TESTS_DIR       = os.path.join(PROJECT_ROOT, 'tests')
 
-# Create directories if they don't exist
 for directory in [CHECKPOINT_DIR, RESULTS_DIR, LOGS_DIR, TESTS_DIR]:
     os.makedirs(directory, exist_ok=True)
 
@@ -173,13 +208,13 @@ for directory in [CHECKPOINT_DIR, RESULTS_DIR, LOGS_DIR, TESTS_DIR]:
 # DEMO CONFIGURATION
 # ============================================================================
 
-DEMO_GREEDY = True  # Use greedy policy (epsilon=0) for demo
-DEMO_SHOWCASE_EPISODES = 3  # Number of pre-selected showcase episodes
-DEMO_STEP_DELAY = 1.0  # Seconds between steps in auto-play mode
+DEMO_GREEDY          = True
+DEMO_SHOWCASE_EPISODES = 3
+DEMO_STEP_DELAY      = 1.0
 
 # ============================================================================
-# CONTEXTUAL BANDIT (FALLBACK) CONFIGURATION
+# CONTEXTUAL BANDIT FALLBACK
 # ============================================================================
 
-LINUCB_ALPHA = 1.0  # Exploration parameter
-LINUCB_FEATURE_DIM = 88  # Same as DQN state dim
+LINUCB_ALPHA       = 1.0
+LINUCB_FEATURE_DIM = 96   # Updated to match new STATE_DIM
