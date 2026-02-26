@@ -24,6 +24,8 @@ WORK_END_SLOT      = 15      # Slot 15 = last slot of 09:00–17:00 window
 PHASE1_DAYS   = 20           # Phase 1: 4 working weeks / 1 month (baseline-driven + passive DQN)
 PHASE2_DAYS   = 5            # Phase 2: 1 working week (DQN-controlled with online learning)
 TOTAL_SIM_DAYS = PHASE1_DAYS + PHASE2_DAYS   # 25 working days total
+EPISODE_HORIZON = TOTAL_SIM_DAYS * SLOTS_PER_DAY  # Max steps per episode
+NUM_TASKS       = 200   # Alias for TOTAL_TASKS (legacy compat)
 
 # ============================================================================
 # WORKERS
