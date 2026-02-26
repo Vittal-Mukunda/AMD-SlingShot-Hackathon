@@ -128,7 +128,11 @@ class Worker:
 
         # Quality: skill vs complexity, degraded by fatigue + intra-day decay
         base_quality    = min(1.0, self.true_skill / max(complexity, 0.1))
-        fatigue_penalty = self.fatigue_sensitivity * self.fatigue
+        
+        # Dramatic productivity drop scaled proportionally by worker traits and overload
+        overload_penalty = (self.load / max(1, config.MAX_WORKER_LOAD)) * 0.2  if self.load > config.MAX_WORKER_LOAD // 2 else 0.0
+        fatigue_penalty = (self.fatigue_sensitivity * self.fatigue) + overload_penalty
+        
         intraday_penalty = config.INTRADAY_DECAY_RATE * min(self.hours_worked_today, 8.0)
         quality         = base_quality * (1.0 - fatigue_penalty) * (1.0 - intraday_penalty)
         quality         = float(np.clip(quality, 0.0, 1.0))
@@ -153,9 +157,14 @@ class Worker:
             return
 
         if self.load > config.MAX_WORKER_LOAD // 2:          # Overloaded threshold
-            prob = 0.25 + 0.08 * self.fatigue                # Escalates when already tired
+            # Dynamic behavioral mechanic: Drop-off scales drastically under heavy load based on inherent traits.
+            base_prob = 0.25 + 0.08 * self.fatigue
+            # Increase overload sensitivity by combining trait factors when overloaded
+            fragility_factor = self.fatigue_rate / max(self.true_skill, 0.1)
+            prob = base_prob * (1.0 + fragility_factor)
+            
             if np.random.rand() < prob:
-                self.fatigue = min(3.0, self.fatigue + self.fatigue_rate)
+                self.fatigue = min(3.0, self.fatigue + self.fatigue_rate * 1.5)  # Accelerated fatigue growth
         elif self.load == 0:                                  # Idle → recover
             self.fatigue = max(0.0, self.fatigue - self.recovery_rate)
 

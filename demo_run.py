@@ -34,6 +34,7 @@ from baselines.stf_baseline import STFBaseline
 from baselines.skill_baseline import SkillBaseline
 from baselines.hybrid_baseline import HybridBaseline
 from visualization.task_grid_viz import TaskGridVisualizer
+import interactive_config
 
 
 # ─── Console helpers ──────────────────────────────────────────────────────────
@@ -56,43 +57,8 @@ def _section(title: str):
 
 # ─── Step 1: Seed selection ───────────────────────────────────────────────────
 
-def prompt_seed() -> int:
-    """
-    Ask the user to enter a seed or press Enter for an auto-generated one.
-
-    Returns:
-        Integer seed to use for ALL environment resets.
-    """
-    _banner('RL-DRIVEN AGENTIC PROJECT MANAGER — DEMO')
-    print()
-    print('  This demo runs 5 baselines + DQN agent on the SAME environment seed.')
-    print('  All hidden worker parameters are revealed to YOU (the observer) only.')
-    print('  Neither the baselines nor the DQN agent can see these values.')
-    print()
-    print('  ┌─────────────────────────────────────────────────────────┐')
-    print('  │  SEED SELECTION                                         │')
-    print('  │  • Press  Enter  for an auto-generated random seed      │')
-    print('  │  • Type a number (e.g. 42) for a custom seed            │')
-    print('  └─────────────────────────────────────────────────────────┘')
-    print()
-
-    raw = input('  Your choice: ').strip()
-
-    if raw == '':
-        seed = random.randint(1000, 99999)
-        print(f'\n  [auto] Generated seed: {seed}')
-    else:
-        try:
-            seed = int(raw)
-            print(f'\n  [custom] Using seed: {seed}')
-        except ValueError:
-            print(f'  [warn] Invalid input "{raw}" — using auto-generated seed.')
-            seed = random.randint(1000, 99999)
-            print(f'  [auto] Generated seed: {seed}')
-
-    _banner(f'ENVIRONMENT SEED:  {seed}', char='═')
-    print(f'\n  Reproducibility guaranteed: run with seed {seed} again for identical results.\n')
-    return seed
+    # Usage of interactive_config replaces prompt_seed
+    return interactive_config.prompt_for_config()
 
 
 # ─── Step 2: Worker profile display ──────────────────────────────────────────
@@ -204,20 +170,23 @@ def run_agent_with_viz(
         total_reward += reward
         step += 1
 
-        # Update visualization
-        if action_type in ('assign', 'defer'):
-            viz.update(task_id, worker_id, action_type, step, task_info=task_info)
+        # Update visualization ONLY for Phase 2 (1-week testing window)
+        is_phase2 = env.clock.day >= config.PHASE1_DAYS
+        
+        if is_phase2:
+            if action_type in ('assign', 'defer'):
+                viz.update(task_id, worker_id, action_type, step, task_info=task_info)
 
-        # Console log for assign actions
-        if action_type == 'assign' and 0 <= worker_id < env.num_workers:
-            complexity_str = f"C{task_info['complexity']}" if task_info else ''
-            print(
-                f'    Step {step:>3} │ Task {task_id:>2} ({complexity_str}) ──► Worker W-{worker_id} '
-                f'│  r={reward:+.3f}  │  completed: {len(env.completed_tasks)}/{env.num_tasks}'
-            )
+            # Console log for assign actions
+            if action_type == 'assign' and 0 <= worker_id < env.num_workers:
+                complexity_str = f"C{task_info['complexity']}" if task_info else ''
+                print(
+                    f'    Step {step:>3} │ Task {task_id:>2} ({complexity_str}) ──► Worker W-{worker_id} '
+                    f'│  r={reward:+.3f}  │  completed: {len(env.completed_tasks)}/{env.num_tasks}'
+                )
 
-        if step_delay > 0:
-            time.sleep(step_delay)
+            if step_delay > 0:
+                time.sleep(step_delay)
 
     metrics = env.compute_metrics()
 
@@ -314,11 +283,26 @@ def load_dqn_agent():
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    # ── 1. Seed selection ──────────────────────────────────────────────────────
-    env_seed = prompt_seed()
+    # ── 1. Interactive setup ───────────────────────────────────────────────────
+    setup = prompt_seed()
+    env_seed = setup['seed']
+    if setup['project_goal']:
+        print(f"\n  [Setup] Primary Goal: {setup['project_goal']}")
 
     # ── 2. Initialize environment and display hidden worker profiles ───────────
     env = ProjectEnv(seed=env_seed, reward_scale=0.1)
+    
+    # Apply manual worker overrides if specified
+    if setup['manual_workers']:
+        for override in setup['worker_overrides']:
+            w_id = override['id']
+            if 0 <= w_id < env.num_workers:
+                worker = env.workers[w_id]
+                worker.true_skill = override['skill']
+                worker.speed_multiplier = override['speed']
+                worker.fatigue_rate = override['fatigue_rate']
+                worker.burnout_resilience = override['resilience']
+                
     _ = env.reset()  # Trigger worker init with the seeded RNG
 
     display_worker_profiles(env)

@@ -21,8 +21,8 @@ WORK_START_SLOT    = 0       # Slot 0 = 09:00 within each day
 WORK_END_SLOT      = 15      # Slot 15 = last slot of 09:00–17:00 window
 
 # Two-phase framework durations
-PHASE1_DAYS   = 10           # Phase 1: 2 working weeks (baseline-driven + passive DQN)
-PHASE2_DAYS   = 15           # Phase 2: 3 working weeks (DQN-controlled with online learning)
+PHASE1_DAYS   = 20           # Phase 1: 4 working weeks / 1 month (baseline-driven + passive DQN)
+PHASE2_DAYS   = 5            # Phase 2: 1 working week (DQN-controlled with online learning)
 TOTAL_SIM_DAYS = PHASE1_DAYS + PHASE2_DAYS   # 25 working days total
 
 # ============================================================================
