@@ -14,8 +14,7 @@ import numpy as np
 from typing import List, Optional
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import config
+from slingshot.core.settings import config
 
 
 class Task:
@@ -34,6 +33,7 @@ class Task:
         deadline_h: float,
         dependencies: Optional[List[int]] = None,
         arrival_tick: int = 0,
+        task_type: int = 0,
     ):
         """
         Initialise task.
@@ -52,6 +52,7 @@ class Task:
         self.deadline_h   = deadline_h
         self.dependencies = dependencies if dependencies is not None else []
         self.arrival_tick = arrival_tick
+        self.task_type    = task_type
 
         # Derived: slot-based absolute deadline
         self.deadline_slot = int(arrival_tick + deadline_h / config.SLOT_HOURS)
@@ -281,6 +282,7 @@ def generate_poisson_arrivals(
 
         priority   = int(rng.choice(config.TASK_PRIORITIES))
         complexity = int(rng.choice(config.TASK_COMPLEXITY_LEVELS))
+        task_type  = int(rng.choice(config.TASK_TYPES)) if hasattr(config, 'TASK_TYPES') else 0
 
         # Deadline: scales with complexity and priority (more complex → more time)
         base_deadline_h  = config.DEADLINE_MIN_H + (complexity - 1) * 3.0
@@ -298,6 +300,7 @@ def generate_poisson_arrivals(
             deadline_h   = deadline_h,
             dependencies = [],   # Dependencies set after graph generation
             arrival_tick = arrival_tick,
+            task_type    = task_type,
         )
         tasks.append(task)
 

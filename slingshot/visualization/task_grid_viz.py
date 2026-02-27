@@ -66,7 +66,9 @@ class TaskGridVisualizer:
 
         # ── Create figure ──────────────────────────────────────────────────────
         plt.ion()  # Interactive mode ON
-        self.fig, self.ax = plt.subplots(figsize=(16, 5))
+        # Widen the figure dynamically based on num_tasks for comfortable x-axis scaling
+        fig_width = max(16, num_tasks * 0.35)
+        self.fig, self.ax = plt.subplots(figsize=(fig_width, 5))
         self.fig.patch.set_facecolor('#1A1A2E')   # Dark navy background
         self.ax.set_facecolor('#16213E')
 
@@ -142,7 +144,7 @@ class TaskGridVisualizer:
         """Refresh the figure title with current stats."""
         palette = 'Blue Palette' if self._is_dqn else '5-Color Palette'
         self.fig.suptitle(
-            f'🎯  Task Allocation Grid  ─  Agent: {self._agent_name}  '
+            f'Task Allocation Grid  ─  Agent: {self._agent_name}  '
             f'│  Step {self.step_count}  │  Assigned: {self.assign_count}  │  Deferred: {self.defer_count}  '
             f'│  [{palette}]',
             color='white', fontsize=11, fontweight='bold',

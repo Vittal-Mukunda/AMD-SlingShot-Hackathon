@@ -7,8 +7,7 @@ import numpy as np
 from typing import Dict, Tuple
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import config
+from slingshot.core.settings import config
 
 
 class BeliefState:

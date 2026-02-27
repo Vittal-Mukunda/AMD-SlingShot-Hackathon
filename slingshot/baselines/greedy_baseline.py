@@ -8,10 +8,9 @@ Uses env.clock.tick for zero-lookahead task visibility.
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from baselines.base_policy import BasePolicy
-from environment.project_env import ProjectEnv
+from slingshot.baselines.base_policy import BasePolicy
+from slingshot.environment.project_env import ProjectEnv
 
 
 class GreedyBaseline(BasePolicy):

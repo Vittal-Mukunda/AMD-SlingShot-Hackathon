@@ -5,11 +5,12 @@ from app.db.models import Task, Worker, SimulationState, TaskStatus, TaskPriorit
 from app.core.logging import setup_logger
 
 # Import the core RL environment
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from environment.project_env import ProjectEnv
+    from slingshot.environment.project_env import ProjectEnv
+    from slingshot.core.settings import config
 except ImportError:
     ProjectEnv = None
+    config = None
 
 logger = setup_logger("SimulationService")
 
@@ -23,7 +24,9 @@ class SimulationService:
         # Singleton pattern to ensure the simulation state persists across API calls
         if cls._instance is None:
             cls._instance = super(SimulationService, cls).__new__(cls)
-            cls._instance.env = ProjectEnv(num_workers=3, num_tasks=10, seed=42) if ProjectEnv else None
+            num_w = config.NUM_WORKERS if config else 5
+            num_t = config.TOTAL_TASKS if config else 200
+            cls._instance.env = ProjectEnv(num_workers=num_w, total_tasks=num_t, seed=42) if ProjectEnv else None
             if cls._instance.env:
                 cls._instance.env.reset()
                 logger.info("Initialized RL ProjectEnv Simulation")
@@ -57,12 +60,12 @@ class SimulationService:
                     events.append("Executed idle/defer tick")
             
             logger.info("Simulation Step", extra={"extra_data": {
-                "time": self.env.current_timestep, 
+                "time": self.env.clock.tick * config.SLOT_HOURS if config else 0, 
                 "reward": reward,
                 "done": done
             }})
             return {
-                "current_time": self.env.current_timestep,
+                "current_time": self.env.clock.tick * config.SLOT_HOURS if config else 0,
                 "events": events,
                 "reward": reward,
                 "done": done,
@@ -103,7 +106,7 @@ class SimulationService:
                 id=f"t{t.task_id}",
                 title=f"Task {t.task_id}",
                 complexity=t.complexity,
-                deadline=t.deadline,
+                deadline=t.deadline_slot * config.SLOT_HOURS if config else 0,
                 priority=pri,
                 status=status,
                 assigned_to=f"w{t.assigned_worker}" if t.assigned_worker is not None else None
@@ -112,5 +115,5 @@ class SimulationService:
         return SimulationState(
             tasks=api_tasks,
             workers=api_workers,
-            current_time=self.env.current_timestep
+            current_time=self.env.clock.tick * config.SLOT_HOURS if config else 0
         ).model_dump()

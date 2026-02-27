@@ -28,22 +28,21 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import numpy as np
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-import config
-from environment.project_env import ProjectEnv
-from agents.dqn_agent import DQNAgent
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.agents.dqn_agent import DQNAgent
 
 # ── Baseline imports ──────────────────────────────────────────────────────────
-from baselines.greedy_baseline  import GreedyBaseline
-from baselines.skill_baseline   import SkillBaseline
+from slingshot.baselines.greedy_baseline  import GreedyBaseline
+from slingshot.baselines.skill_baseline   import SkillBaseline
 try:
-    from baselines.hybrid_baseline  import HybridBaseline
+    from slingshot.baselines.hybrid_baseline  import HybridBaseline
     _HAS_HYBRID = True
 except ImportError:
     _HAS_HYBRID = False
 
 try:
-    from baselines.random_baseline  import RandomBaseline
+    from slingshot.baselines.random_baseline  import RandomBaseline
     _HAS_RANDOM = True
 except ImportError:
     _HAS_RANDOM = False

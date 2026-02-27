@@ -68,6 +68,24 @@ def register_tools(mcp):
         return task_service.escalate_task(task_id)
 
     @mcp.tool()
+    def predict_deadline_risk() -> dict:
+        """Analyze current tasks and predict which ones are at risk of missing deadlines.
+
+        Returns:
+            dict: List of tasks with high risk scores.
+        """
+        return task_service.predict_deadline_risk()
+
+    @mcp.tool()
+    def optimize_resource_allocation() -> dict:
+        """Analyze current unassigned tasks and free workers to suggest optimal assignments.
+
+        Returns:
+            dict: Suggested task-to-worker assignments.
+        """
+        return task_service.optimize_resource_allocation()
+
+    @mcp.tool()
     def get_state() -> dict:
         """Return global project state.
 

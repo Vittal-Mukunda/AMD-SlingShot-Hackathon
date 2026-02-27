@@ -4,10 +4,9 @@ Test script to verify environment stability improvements for DQN
 
 import numpy as np
 import sys
-sys.path.append('../')
 
-from environment.project_env import ProjectEnv
-import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.core.settings import config
 
 print("="*80)
 print("TESTING ENVIRONMENT STABILITY IMPROVEMENTS")

@@ -5,7 +5,6 @@ import random
 from typing import Dict, Any
 
 # Add project root to sys.path so we can import 'app' and 'environment'
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock MCP Client (In reality, use standard MCP Python Client here when agent is ready)
 class DummyMCPClient:
@@ -16,7 +15,7 @@ class DummyMCPClient:
         args = args or {}
         if name == "get_rl_observation":
             try:
-                from environment.project_env import ProjectEnv
+                from slingshot.environment.project_env import ProjectEnv
                 env = ProjectEnv(num_workers=3, num_tasks=10)
                 return env.reset()
             except:

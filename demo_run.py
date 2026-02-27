@@ -27,14 +27,14 @@ import numpy as np
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-import config
-from environment.project_env import ProjectEnv
-from baselines.random_baseline import RandomBaseline
-from baselines.greedy_baseline import GreedyBaseline
-from baselines.stf_baseline import STFBaseline
-from baselines.skill_baseline import SkillBaseline
-from baselines.hybrid_baseline import HybridBaseline
-from visualization.task_grid_viz import TaskGridVisualizer
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.baselines.random_baseline import RandomBaseline
+from slingshot.baselines.greedy_baseline import GreedyBaseline
+from slingshot.baselines.stf_baseline import STFBaseline
+from slingshot.baselines.skill_baseline import SkillBaseline
+from slingshot.baselines.hybrid_baseline import HybridBaseline
+from slingshot.visualization.task_grid_viz import TaskGridVisualizer
 from interactive_config import prompt_for_config
 
 
@@ -255,7 +255,7 @@ def load_dqn_agent():
     Load the trained DQN agent from checkpoints/best_model.pth.
     Returns DQNAgent instance ready for greedy evaluation, or None if not found.
     """
-    from agents.dqn_agent import DQNAgent
+    from slingshot.agents.dqn_agent import DQNAgent
 
     model_path = os.path.join(PROJECT_ROOT, 'checkpoints', 'best_model.pth')
 

@@ -4,10 +4,9 @@ Tests 10 episodes to ensure everything works
 """
 
 import sys
-sys.path.append('.')
 
-from training.train_dqn import train_dqn
-import config
+from slingshot.training.train_dqn import train_dqn
+from slingshot.core.settings import config
 
 print("Running quick DQN training test (10 episodes)...")
 print("="*80)

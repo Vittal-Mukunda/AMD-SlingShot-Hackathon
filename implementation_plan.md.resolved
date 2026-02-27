@@ -1,0 +1,38 @@
+# Implementation Plan: Repository Improvements
+
+This plan outlines the steps to implement the improvements identified in the analysis, focusing on modularity, configuration management, and enhanced features.
+
+## Proposed Changes
+
+### 1. Unified Configuration
+- Create `slingshot/core/settings.py` using Pydantic `BaseSettings`.
+- Migrate all hyperparameters from root [config.py](file:///d:/Projects/amd/AMD-SlingShot-Hackathon/config.py) and [app/core/config.py](file:///d:/Projects/amd/AMD-SlingShot-Hackathon/app/core/config.py) to this new central location.
+- Support environment variable overrides.
+
+### 2. Modular Restructuring
+- Create a `slingshot/` source directory.
+- Move `environment/`, `agents/`, `training/`, `evaluation/`, and `visualization/` into `slingshot/`.
+- Update all imports to use absolute paths (e.g., `from slingshot.environment import ProjectEnv`).
+- Remove `sys.path` hacks.
+
+### 3. Environment Enhancements
+- **Context Switches**: Add a penalty (time or reward) when a worker is assigned a new task that differs significantly from their previous one.
+- **Collaboration**: Update [ProjectEnv](file:///d:/Projects/amd/AMD-SlingShot-Hackathon/environment/project_env.py#63-652) to support "Multi-worker Tasks" where quality or speed improves when certain worker pairs are matched.
+- **W&B Integration**: Add optional `wandb` logging to the training loop.
+
+### 4. Advanced MCP Tools
+- Implement `predict_deadline_risk`: An analytical tool that calculates the probability of missing project deadlines based on current throughput.
+- Implement `optimize_resource_allocation`: A tool that suggests the best task-to-worker assignments based on the agent's current belief state.
+
+### 5. Streamlit Dashboard
+- Create `app/dashboard.py` to provide a real-time visual interface for the simulation.
+
+## Verification Plan
+
+### Automated Tests
+- Run `pytest` to ensure core environment logic remains intact.
+- Run `python demo_run.py` to verify the interactive flow still works.
+
+### Manual Verification
+- Start the FastAPI app and test the new MCP tools via the `/mcp` explorer.
+- Launch the Streamlit dashboard and verify real-time updates.

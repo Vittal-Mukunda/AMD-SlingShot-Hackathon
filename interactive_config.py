@@ -4,7 +4,7 @@ Interactive Configuration Prompt
 Run before starting the core simulation in demo_run.py to configure global settings.
 """
 
-import config
+from slingshot.core.settings import config
 import random
 
 def prompt_for_config() -> dict:

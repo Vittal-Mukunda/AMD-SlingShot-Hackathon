@@ -7,11 +7,10 @@ This is the strongest baseline that RL must outperform
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from baselines.base_policy import BasePolicy
-from environment.project_env import ProjectEnv
+from slingshot.core.settings import config
+from slingshot.baselines.base_policy import BasePolicy
+from slingshot.environment.project_env import ProjectEnv
 
 
 class HybridBaseline(BasePolicy):
@@ -144,7 +143,7 @@ class HybridBaseline(BasePolicy):
 
 if __name__ == "__main__":
     print("Testing HybridBaseline v4...")
-    from environment.project_env import ProjectEnv
+    from slingshot.environment.project_env import ProjectEnv
     env    = ProjectEnv(num_workers=5, total_tasks=40, seed=42)
     policy = HybridBaseline(env)
     state  = env.reset()

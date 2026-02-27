@@ -7,11 +7,11 @@ print("=" * 60)
 print("SMOKE TEST — v4 Continual Online Learning System")
 print("=" * 60)
 
-import config
+from slingshot.core.settings import config
 
 # ── Test 1: Worker ────────────────────────────────────────────────────────────
 print("\n[1] Worker v4...")
-from environment.worker import Worker
+from slingshot.environment.worker import Worker
 w = Worker(worker_id=0, skill=1.0)
 w.assign_task(10)
 t, q = w.complete_task(10, complexity=3)
@@ -23,7 +23,7 @@ print(f"  ✓ state_dim={len(sv)}, time={t:.2f}h, quality={q:.3f}, skill_est={mu
 
 # ── Test 2: Task + Poisson arrivals ──────────────────────────────────────────
 print("\n[2] Task v4 + Poisson arrivals...")
-from environment.task import Task, generate_poisson_arrivals
+from slingshot.environment.task import Task, generate_poisson_arrivals
 tasks = generate_poisson_arrivals(total_tasks=30, seed=42)
 assert len(tasks) == 30, f"Expected 30 tasks, got {len(tasks)}"
 t0 = tasks[0]
@@ -35,7 +35,7 @@ print(f"  ✓ {len(tasks)} tasks generated, state_dim={len(sv_t)}, arrival={t0.a
 
 # ── Test 3: ProjectEnv ────────────────────────────────────────────────────────
 print("\n[3] ProjectEnv v4...")
-from environment.project_env import ProjectEnv
+from slingshot.environment.project_env import ProjectEnv
 env = ProjectEnv(num_workers=5, total_tasks=30, seed=42)
 state = env.reset()
 assert len(state) == config.STATE_DIM, f"State should be {config.STATE_DIM}-dim, got {len(state)}"
@@ -57,7 +57,7 @@ print(f"  ✓ metrics: throughput={metrics['throughput']}, completion={metrics['
 
 # ── Test 4: DQN Agent ──────────────────────────────────────────────────────────
 print("\n[4] DQN Agent v4 (online)...")
-from agents.dqn_agent import DQNAgent
+from slingshot.agents.dqn_agent import DQNAgent
 agent = DQNAgent()
 assert agent.state_dim == config.STATE_DIM
 # fill buffer
@@ -73,7 +73,7 @@ print(f"  ✓ epsilon decay: {eps_before:.4f} → {agent.epsilon:.4f}")
 
 # ── Test 5: Skill Baseline ────────────────────────────────────────────────────
 print("\n[5] SkillBaseline v4...")
-from baselines.skill_baseline import SkillBaseline
+from slingshot.baselines.skill_baseline import SkillBaseline
 env2 = ProjectEnv(num_workers=5, total_tasks=20, seed=99)
 bl = SkillBaseline(env2, observation_episodes=2, debug=False)
 state = env2.reset()
@@ -90,7 +90,7 @@ print(f"  ✓ SkillBaseline OK, estimates={dict(bl._skill_means)}")
 
 # ── Test 6: Greedy Baseline ───────────────────────────────────────────────────
 print("\n[6] GreedyBaseline v4...")
-from baselines.greedy_baseline import GreedyBaseline
+from slingshot.baselines.greedy_baseline import GreedyBaseline
 env3 = ProjectEnv(num_workers=5, total_tasks=20, seed=7)
 bl2 = GreedyBaseline(env3)
 state = env3.reset()

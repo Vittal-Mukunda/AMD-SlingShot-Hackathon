@@ -19,8 +19,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import List, Tuple, Optional
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import config
+from slingshot.core.settings import config
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -427,8 +426,12 @@ class DQNAgent:
 
     # ── Epsilon decay (called per DECISION in online mode) ────────────────────
 
-    def update_epsilon(self, step: Optional[int] = None):
+    def update_epsilon(self, step: Optional[int] = None, **kwargs):
         """Exponential decay; also steps the cosine LR scheduler."""
+        # Handle legacy 'episode' keyword if passed
+        if step is None and 'episode' in kwargs:
+            step = kwargs['episode']
+            
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
         self.scheduler.step(step if step is not None else self.train_steps)
 

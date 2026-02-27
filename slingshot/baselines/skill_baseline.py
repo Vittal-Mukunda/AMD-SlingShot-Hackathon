@@ -13,11 +13,10 @@ Fixes in v4:
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from baselines.base_policy import BasePolicy
-from environment.project_env import ProjectEnv
+from slingshot.core.settings import config
+from slingshot.baselines.base_policy import BasePolicy
+from slingshot.environment.project_env import ProjectEnv
 
 
 class SkillBaseline(BasePolicy):
@@ -205,8 +204,8 @@ class SkillBaseline(BasePolicy):
 
 if __name__ == "__main__":
     print("Testing SkillBaseline v4...")
-    from environment.project_env import ProjectEnv
-    import config as cfg
+    from slingshot.environment.project_env import ProjectEnv
+    from slingshot.core.settings import config as cfg
 
     cfg.BASELINE_DEBUG_SKILL = True
     env    = ProjectEnv(num_workers=5, total_tasks=40, seed=42)

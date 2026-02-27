@@ -19,8 +19,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import config
+from slingshot.core.settings import config
 
 
 class Worker:
@@ -49,6 +48,7 @@ class Worker:
         self.assigned_tasks: List[int] = []
         self.completion_history: List[Tuple] = []   # (complexity, time_h, quality)
         self.burnout_timer       = 0      # Slots remaining in burnout recovery
+        self.last_task_type: Optional[int] = None
 
         # ── Hidden permanent traits (never in state vector) ───────────────────
         self.true_skill = (
@@ -78,12 +78,18 @@ class Worker:
 
     # ── Task assignment / completion ──────────────────────────────────────────
 
-    def assign_task(self, task_id: int):
+    def assign_task(self, task_id: int, task_type: Optional[int] = None):
         """Assign a task; raises if worker unavailable."""
         if self.availability == 0:
             raise ValueError(f"Worker {self.worker_id} is unavailable (burnout)")
         self.assigned_tasks.append(task_id)
         self.load += 1
+        
+        if task_type is not None:
+            if self.last_task_type is not None and task_type != self.last_task_type:
+                penalty = getattr(config, 'CONTEXT_SWITCH_PENALTY', 0.2)
+                self.fatigue = min(3.0, self.fatigue + penalty)
+            self.last_task_type = task_type
 
     def complete_task(self, task_id: int, complexity: int) -> Tuple[float, float]:
         """
@@ -257,6 +263,7 @@ class Worker:
         self.completion_history = []
         self.burnout_timer      = 0
         self.hours_worked_today = 0.0
+        self.last_task_type     = None
         if new_skill is not None:
             self.true_skill = float(new_skill)
 
