@@ -402,8 +402,7 @@ def main():
     # Override phase days in config for env slot calculation
     config.PHASE1_DAYS   = args.days_p1
     config.PHASE2_DAYS   = args.days_p2
-    config.TOTAL_SIM_DAYS = args.days_p1 + args.days_p2
-    total_slots = config.TOTAL_SIM_DAYS * config.SLOTS_PER_DAY
+    total_slots = (args.days_p1 + args.days_p2) * config.SLOTS_PER_DAY
 
     np.random.seed(args.seed)
 
