@@ -12,11 +12,10 @@ import sys
 from tqdm import tqdm
 import copy
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.project_env import ProjectEnv
-from agents.dqn_agent import DQNAgent
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.agents.dqn_agent import DQNAgent
 from utils.metrics import compute_composite_score
 
 def evaluate_agent(model_path='checkpoints/best_model.pth', 

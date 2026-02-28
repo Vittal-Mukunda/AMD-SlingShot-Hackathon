@@ -4,9 +4,8 @@ Runs 1 episode per condition to verify pipeline integrity.
 """
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from evaluation.ablation_studies import run_ablation_studies
+from slingshot.evaluation.ablation_studies import run_ablation_studies
 
 if __name__ == "__main__":
     print("Running ablation smoke test (1 episode/condition)...")

@@ -8,7 +8,7 @@ Creates a 4-panel Matplotlib window that updates every N episodes during trainin
   Panel 4: Reward component breakdown (stacked area)
 
 Usage:
-    from training.live_training_visualizer import LiveTrainingVisualizer
+    from slingshot.training.live_training_visualizer import LiveTrainingVisualizer
     viz = LiveTrainingVisualizer(output_path="results/learning_curve.png")
     viz.update(episode, return_, epsilon, q_mean, breakdown_dict)
     viz.save_final()   # call once at end of training

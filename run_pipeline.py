@@ -32,7 +32,7 @@ from datetime import datetime
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-import config
+from slingshot.core.settings import config
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -92,10 +92,10 @@ def validate_stability(stats: dict):
 
 def phase_train(args):
     print_banner("PHASE 1 — DQN Training")
-    from training.train_dqn import train_dqn
-    from training.visualize import plot_learning_curve
-    from environment.project_env import ProjectEnv
-    from agents.dqn_agent import DQNAgent
+    from slingshot.training.train_dqn import train_dqn
+    from slingshot.training.visualize import plot_learning_curve
+    from slingshot.environment.project_env import ProjectEnv
+    from slingshot.agents.dqn_agent import DQNAgent
     from utils.metrics import compute_composite_score
 
     set_global_seeds(args.seed)
@@ -165,7 +165,7 @@ def phase_train(args):
 
 def phase_baselines(args):
     print_banner("PHASE 2 — Baseline Evaluation")
-    from training.train_baselines import run_baselines
+    from slingshot.training.train_baselines import run_baselines
 
     set_global_seeds(args.seed)
     ensure_dirs()
@@ -184,7 +184,7 @@ def phase_baselines(args):
 
 def phase_evaluate(args):
     print_banner("PHASE 3 — RL Agent Evaluation (4 conditions)")
-    from evaluation.evaluate_agent import evaluate_agent
+    from slingshot.evaluation.evaluate_agent import evaluate_agent
 
     set_global_seeds(args.seed)
     ensure_dirs()
@@ -204,7 +204,7 @@ def phase_evaluate(args):
 
 def phase_stats(args):
     print_banner("PHASE 4 — Statistical Testing (Welch's t-test + Bonferroni + Cohen's d)")
-    from evaluation.statistical_tests import run_statistical_tests
+    from slingshot.evaluation.statistical_tests import run_statistical_tests
 
     ensure_dirs()
 
@@ -220,8 +220,8 @@ def phase_stats(args):
 
 def phase_plots(args):
     print_banner("PHASE 5 — Visualization (learning curve + money plot)")
-    from training.visualize import plot_learning_curve
-    from visualization.plot_metrics import plot_metrics
+    from slingshot.training.visualize import plot_learning_curve
+    from slingshot.visualization.plot_metrics import plot_metrics
 
     ensure_dirs()
 

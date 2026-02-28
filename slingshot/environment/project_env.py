@@ -15,12 +15,11 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.worker import Worker
-from environment.task   import Task, generate_poisson_arrivals
-from environment.belief_state import BeliefState
+from slingshot.core.settings import config
+from slingshot.environment.worker import Worker
+from slingshot.environment.task   import Task, generate_poisson_arrivals
+from slingshot.environment.belief_state import BeliefState
 
 
 class SimClock:
@@ -113,7 +112,14 @@ class ProjectEnv:
 
         # Workers (permanent across episodes)
         self.workers      = [Worker(worker_id=i) for i in range(self.num_workers)]
-
+        
+        # Synergy matrix for collaboration factors
+        if self._seed is not None:
+            rng = np.random.default_rng(self._seed)
+            self.synergy_matrix = rng.uniform(0.95, 1.15, size=(self.num_workers, self.num_workers))
+        else:
+            self.synergy_matrix = np.random.uniform(0.95, 1.15, size=(self.num_workers, self.num_workers))
+            
         # Belief state for skill tracking (Bayesian)
         self.belief_state = BeliefState(num_workers=self.num_workers)
 
@@ -166,7 +172,17 @@ class ProjectEnv:
         self.clock           = SimClock()
         self.metrics         = self._empty_metrics()
         self._last_reward_breakdown    = {}
-        self._episode_reward_breakdown = {}
+        self._episode_reward_breakdown = {
+            'action_reward': 0.0,
+            'completion_reward': 0.0,
+            'idle_penalty': 0.0,
+            'lateness_penalty': 0.0,
+            'urgency_penalty': 0.0,
+            'overload_penalty': 0.0,
+            'deadline_miss': 0.0,
+            'delay_penalty': 0.0,
+            'makespan_bonus': 0.0,
+        }
         self._all_completed_makespan   = False
 
         return self._get_state()
@@ -234,6 +250,15 @@ class ProjectEnv:
         for t in new_fails:
             self.failed_tasks.append(t)
 
+        makespan_bonus = 0.0
+        # Terminal makespan bonus: all tasks complete → bonus inversely proportional to time used
+        if (not self._all_completed_makespan
+                and len(self.completed_tasks) == len(self.tasks)):
+            makespan_bonus = config.REWARD_MAKESPAN_BONUS * max(
+                0.0, 1.0 - self.clock.tick / self._total_sim_slots
+            )
+            self._all_completed_makespan = True
+
         reward_raw = (
             action_reward
             + completion_reward
@@ -243,16 +268,8 @@ class ProjectEnv:
             + overload_penalty
             + delay_penalty
             + deadline_miss_penalty
+            + makespan_bonus
         )
-
-        # Terminal makespan bonus: all tasks complete → bonus inversely proportional to time used
-        if (not self._all_completed_makespan
-                and len(self.completed_tasks) == len(self.tasks)):
-            makespan_bonus = config.REWARD_MAKESPAN_BONUS * max(
-                0.0, 1.0 - self.clock.tick / self._total_sim_slots
-            )
-            reward_raw += makespan_bonus
-            self._all_completed_makespan = True
 
         reward = reward_raw * self.reward_scale
 
@@ -266,14 +283,13 @@ class ProjectEnv:
             'urgency_penalty':     urgency_penalty,
             'overload_penalty':    overload_penalty,
             'deadline_miss':       deadline_miss_penalty,
+            'delay_penalty':       delay_penalty,
+            'makespan_bonus':      makespan_bonus,
             'total_unscaled':      reward_raw,
             'total_scaled':        reward,
         }
-        for k in ('completion_reward', 'idle_penalty', 'lateness_penalty'):
-            self._episode_reward_breakdown[k] = (
-                self._episode_reward_breakdown.get(k, 0.0)
-                + self._last_reward_breakdown[k]
-            )
+        for k in self._episode_reward_breakdown:
+            self._episode_reward_breakdown[k] += self._last_reward_breakdown.get(k, 0.0)
 
         if self.enable_diagnostics:
             self.diagnostics['reward_components'].append(self._last_reward_breakdown)
@@ -328,12 +344,19 @@ class ProjectEnv:
             if not self._is_valid_assign(task, worker):
                 return -0.5
 
-            worker.assign_task(task.task_id)
+            worker.assign_task(task.task_id, task_type=task.task_type)
+            
+            synergy_boost = 1.0
+            if getattr(config, 'TEAM_SYNERGY_ENABLED', False) and hasattr(self, 'synergy_matrix'):
+                for other_w in self.workers:
+                    if other_w.worker_id != worker_id and other_w.load > 0:
+                        synergy_boost *= self.synergy_matrix[worker_id, other_w.worker_id]
+
             task.assign_to_worker(
                 worker_id    = worker_id,
                 current_tick = self.clock.tick,
                 worker_skill = worker.true_skill,
-                worker_speed = worker.speed_multiplier,
+                worker_speed = worker.speed_multiplier * synergy_boost,
             )
             # Small skill-match bonus
             match = worker.true_skill / max(task.complexity, 1)
@@ -604,11 +627,16 @@ class ProjectEnv:
                       if t.actual_completion_tick is not None
                       and t.actual_completion_tick > t.deadline_slot]
         metrics['lateness_rate']  = len(late_tasks) / max(len(self.completed_tasks), 1)
+        metrics['deadline_hit_rate'] = 1.0 - metrics['lateness_rate']
+        
+        avg_lateness = 0.0
         if late_tasks:
-            metrics['avg_lateness_h'] = float(np.mean([
+            avg_lateness = float(np.mean([
                 (t.actual_completion_tick - t.deadline_slot) * config.SLOT_HOURS
                 for t in late_tasks
             ]))
+        metrics['avg_lateness_h'] = avg_lateness
+        metrics['avg_delay'] = avg_lateness  # Alias for evaluation scripts
 
         # Quality
         if self.completed_tasks:
@@ -638,7 +666,9 @@ class ProjectEnv:
             'throughput_per_day': 0.0,
             'load_balance':      0.0,
             'lateness_rate':     0.0,
+            'deadline_hit_rate': 0.0,
             'avg_lateness_h':    0.0,
+            'avg_delay':         0.0,
             'quality_score':     0.0,
             'overload_events':   0,
         }

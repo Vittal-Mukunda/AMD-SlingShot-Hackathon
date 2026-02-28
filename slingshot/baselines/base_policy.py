@@ -7,10 +7,9 @@ from abc import ABC, abstractmethod
 from typing import List
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.project_env import ProjectEnv
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
 
 
 class BasePolicy(ABC):

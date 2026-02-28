@@ -77,6 +77,28 @@ class TaskService:
         log_agent_action(logger, "ESCALATE", {"task_id": task_id})
         return {"message": "escalated", "task": task.model_dump()}
 
+    def predict_deadline_risk(self) -> Dict[str, Any]:
+        """Calculates risk of missing deadlines."""
+        risky_tasks = []
+        for t in self.state.tasks:
+            if t.status in (TaskStatus.TODO, TaskStatus.IN_PROGRESS):
+                risk_score = min(1.0, float(t.complexity) / 5.0)
+                if risk_score > 0.6:
+                    risky_tasks.append({"task_id": t.id, "risk_score": risk_score})
+        return {"message": "success", "risky_tasks": risky_tasks}
+
+    def optimize_resource_allocation(self) -> Dict[str, Any]:
+        """Suggests optimal task-to-worker assignments."""
+        suggestions = []
+        unassigned = [t for t in self.state.tasks if t.status == TaskStatus.TODO]
+        free_workers = [w for w in self.state.workers if w.current_task_id is None]
+        
+        unassigned.sort(key=lambda x: getattr(x, 'complexity', 1), reverse=True)
+        for t, w in zip(unassigned, free_workers):
+            suggestions.append({"task_id": t.id, "suggested_worker_id": w.id, "reason": "Greedy complexity matching"})
+            
+        return {"message": "success", "suggestions": suggestions}
+
     def get_state(self) -> Dict[str, Any]:
         """Returns the full Global Simulation State"""
         # Since SimulationService now owns the real state, we should ideally fetch from there, 

@@ -3,7 +3,6 @@ import os
 
 # Add project root to python path to ensure imports work
 # Current file is in scripts/, so root is one level up
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.mcp.server import mcp
 

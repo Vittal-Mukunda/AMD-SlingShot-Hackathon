@@ -7,10 +7,9 @@ import numpy as np
 from typing import Dict, List, Tuple
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.project_env import ProjectEnv
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
 
 
 class EnvironmentDiagnostics:

@@ -7,10 +7,9 @@ Ignores deadlines and critical path dependencies
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from baselines.base_policy import BasePolicy
-from environment.project_env import ProjectEnv
+from slingshot.baselines.base_policy import BasePolicy
+from slingshot.environment.project_env import ProjectEnv
 
 
 class STFBaseline(BasePolicy):
@@ -77,7 +76,7 @@ class STFBaseline(BasePolicy):
 
 if __name__ == "__main__":
     print("Testing STFBaseline v4...")
-    from environment.project_env import ProjectEnv
+    from slingshot.environment.project_env import ProjectEnv
     env    = ProjectEnv(num_workers=5, total_tasks=40, seed=42)
     policy = STFBaseline(env)
     state  = env.reset()

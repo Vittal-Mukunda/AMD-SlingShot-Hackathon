@@ -9,8 +9,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import config
+from slingshot.core.settings import config
 
 
 def plot_learning_curve(

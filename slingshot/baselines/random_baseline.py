@@ -6,10 +6,9 @@ Randomly selects from valid actions (sanity check - RL must beat this)
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from baselines.base_policy import BasePolicy
-from environment.project_env import ProjectEnv
+from slingshot.baselines.base_policy import BasePolicy
+from slingshot.environment.project_env import ProjectEnv
 
 
 class RandomBaseline(BasePolicy):
@@ -47,7 +46,7 @@ if __name__ == "__main__":
     # Unit test
     print("Testing RandomBaseline...")
     
-    from environment.project_env import ProjectEnv
+    from slingshot.environment.project_env import ProjectEnv
     
     env = ProjectEnv(num_workers=5, num_tasks=20, seed=42)
     policy = RandomBaseline(env)

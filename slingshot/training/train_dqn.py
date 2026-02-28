@@ -19,11 +19,10 @@ import csv
 import time
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.project_env import ProjectEnv
-from agents.dqn_agent import DQNAgent
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.agents.dqn_agent import DQNAgent
 
 
 class TrainingLogger:
@@ -252,9 +251,9 @@ def train_dqn(
             'overload_events':           metrics['overload_events'],
             'comp_reward':               breakdown.get('completion_reward', 0.0),
             'delay_penalty':             breakdown.get('delay_penalty', 0.0),
-            'deadline_penalty':          breakdown.get('deadline_penalty', 0.0),
+            'deadline_penalty':          breakdown.get('deadline_miss', 0.0) + breakdown.get('lateness_penalty', 0.0),
             'overload_penalty':          breakdown.get('overload_penalty', 0.0),
-            'throughput_bonus':          breakdown.get('throughput_bonus', 0.0),
+            'throughput_bonus':          breakdown.get('makespan_bonus', 0.0),
             'early_stopping_triggered':  early_stopped,
         }
         logger.log_episode(log_metrics)

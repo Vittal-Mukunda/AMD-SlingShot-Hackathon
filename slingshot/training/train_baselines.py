@@ -9,15 +9,14 @@ import os
 import sys
 from tqdm import tqdm
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
-from environment.project_env import ProjectEnv
-from baselines.random_baseline import RandomBaseline
-from baselines.greedy_baseline import GreedyBaseline
-from baselines.stf_baseline import STFBaseline
-from baselines.skill_baseline import SkillBaseline
-from baselines.hybrid_baseline import HybridBaseline
+from slingshot.core.settings import config
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.baselines.random_baseline import RandomBaseline
+from slingshot.baselines.greedy_baseline import GreedyBaseline
+from slingshot.baselines.stf_baseline import STFBaseline
+from slingshot.baselines.skill_baseline import SkillBaseline
+from slingshot.baselines.hybrid_baseline import HybridBaseline
 from utils.metrics import compute_composite_score
 
 def run_baselines(num_episodes=200, seed=42, output_file='results/baseline_performance.csv'):
