@@ -5,6 +5,7 @@ import { useSocket } from './hooks/useSocket';
 import ConfigPage from './pages/ConfigPage';
 import SimulationPage from './pages/SimulationPage';
 import AnalyticsPage from './pages/AnalyticsPage';
+import { ErrorBoundary } from './ErrorBoundary';
 
 function AppShell() {
     // Mount socket connection at app level to persist across page navigations
@@ -29,8 +30,10 @@ function AppShell() {
 
 export default function App() {
     return (
-        <BrowserRouter>
-            <AppShell />
-        </BrowserRouter>
+        <ErrorBoundary>
+            <BrowserRouter>
+                <AppShell />
+            </BrowserRouter>
+        </ErrorBoundary>
     );
 }

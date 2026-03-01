@@ -29,16 +29,21 @@ export function formatTick(tick: number): string {
 
 /** Get head-to-head metrics for Phase 2 comparison strip */
 export function useHeadToHead(): HeadToHeadMetrics {
-    const { dailyMetricsHistory, workerStates, queueDepthHistory, baselineResults } =
+    const { dailyMetricsHistory, workerStates, queueDepthHistory, baselineResults, finalMetrics } =
         useSimulationStore();
 
     const p2Rows = dailyMetricsHistory.filter(r => (r.phase === 2 || r.phase === 3) && r.baseline === 'DQN');
-    const dqnThroughput = p2Rows.length > 0
-        ? p2Rows[p2Rows.length - 1].throughput_per_day
-        : 0;
-    const dqnLateness = p2Rows.length > 0
-        ? p2Rows[p2Rows.length - 1].lateness_rate
-        : 0;
+
+    let dqnThroughput = 0;
+    let dqnLateness = 0;
+
+    if (finalMetrics) {
+        dqnThroughput = finalMetrics.dqn_throughput;
+        dqnLateness = finalMetrics.overall_lateness_rate;
+    } else if (p2Rows.length > 0) {
+        dqnThroughput = p2Rows[p2Rows.length - 1].throughput_per_day;
+        dqnLateness = p2Rows[p2Rows.length - 1].lateness_rate;
+    }
 
     const baselineThroughputs: Record<string, number> = {};
     const baselineMakespans: Record<string, number> = {};

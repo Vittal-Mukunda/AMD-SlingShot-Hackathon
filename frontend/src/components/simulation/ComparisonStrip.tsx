@@ -94,7 +94,7 @@ export default function ComparisonStrip({ phase, hhMetrics, workerCount }: Props
                         <SectionTitle>Queue Depth (last 60 ticks)</SectionTitle>
                         <ResponsiveContainer width="100%" height={80}>
                             <LineChart data={sparkData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                                <Line type="monotone" dataKey="v" stroke="var(--color-amber)" dot={false} strokeWidth={1.5} />
+                                <Line type="monotone" dataKey="v" stroke="var(--color-amber)" dot={false} strokeWidth={1.5} isAnimationActive={false} />
                                 <XAxis dataKey="i" hide />
                                 <YAxis hide />
                                 <RechartsTooltip contentStyle={TOOLTIP_STYLE} />
@@ -126,7 +126,7 @@ export default function ComparisonStrip({ phase, hhMetrics, workerCount }: Props
                             <BarChart data={throughputData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
                                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
                                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--color-text)', fontFamily: 'var(--font-mono)' }} width={42} />
-                                <Bar dataKey="value" radius={[0, 2, 2, 0]}>
+                                <Bar dataKey="value" radius={[0, 2, 2, 0]} isAnimationActive={false}>
                                     {throughputData.map((d) => (
                                         <Cell key={d.name}
                                             fill={d.name === 'DQN' ? 'var(--color-amber)' : POLICY_COLORS[d.name] ?? '#64748B'}
@@ -172,7 +172,7 @@ export default function ComparisonStrip({ phase, hhMetrics, workerCount }: Props
                                 <BarChart data={fatigueData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                                     <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
                                     <YAxis domain={[0, 3]} hide />
-                                    <Bar dataKey="value" radius={[2, 2, 0, 0]}>
+                                    <Bar dataKey="value" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                                         {fatigueData.map((d, i) => (
                                             <Cell key={i} fill={d.color} />
                                         ))}
@@ -190,7 +190,7 @@ export default function ComparisonStrip({ phase, hhMetrics, workerCount }: Props
                         <SectionTitle>Queue Depth (last 60 ticks)</SectionTitle>
                         <ResponsiveContainer width="100%" height={70}>
                             <LineChart data={sparkData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                                <Line type="monotone" dataKey="v" stroke="var(--color-success)" dot={false} strokeWidth={1.5} />
+                                <Line type="monotone" dataKey="v" stroke="var(--color-success)" dot={false} strokeWidth={1.5} isAnimationActive={false} />
                                 <XAxis dataKey="i" hide />
                                 <YAxis hide />
                                 <RechartsTooltip contentStyle={TOOLTIP_STYLE} />

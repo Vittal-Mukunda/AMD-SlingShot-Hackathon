@@ -193,7 +193,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
             // new_phase="training" or 2 means we enter the spinner screen (Bug 8: handle numeric phase)
             const raw = payload.new_phase;
             const newPhase: Phase =
-                raw === 'training' || raw === 2 ? 'training' : 1;
+                raw === 'training' || (raw as any) === 2 ? 'training' : 1;
 
             const bSnap = payload.baseline_results_snapshot ?? {};
             const mergedGantt: Record<string, GanttBlock[]> = { ...state.ganttBlocks };

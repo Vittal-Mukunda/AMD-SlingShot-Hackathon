@@ -27,20 +27,20 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 import config as cfg_module
-from environment.project_env import ProjectEnv
-from agents.dqn_agent import DQNAgent
-from baselines.greedy_baseline import GreedyBaseline
-from baselines.skill_baseline import SkillBaseline
-from baselines.stf_baseline import STFBaseline
+from slingshot.environment.project_env import ProjectEnv
+from slingshot.agents.dqn_agent import DQNAgent
+from slingshot.baselines.greedy_baseline import GreedyBaseline
+from slingshot.baselines.skill_baseline import SkillBaseline
+from slingshot.baselines.stf_baseline import STFBaseline
 
 try:
-    from baselines.hybrid_baseline import HybridBaseline
+    from slingshot.baselines.hybrid_baseline import HybridBaseline
     _HAS_HYBRID = True
 except ImportError:
     _HAS_HYBRID = False
 
 try:
-    from baselines.random_baseline import RandomBaseline
+    from slingshot.baselines.random_baseline import RandomBaseline
     _HAS_RANDOM = True
 except ImportError:
     _HAS_RANDOM = False
@@ -465,6 +465,11 @@ class SimulationRunner:
             if day_decisions > 0:
                 m = self._collect_metrics(day_decisions, bname, env)
                 all_metrics.append(m)
+                await self.sio.emit("daily_summary", {
+                    "day": env.clock.day,
+                    "phase": 1,
+                    "metrics_per_policy": {bname: m},
+                })
 
             gantt_by_baseline[bname] = gantt_blocks
 
@@ -522,7 +527,7 @@ class SimulationRunner:
                     "percent": pct,
                     "steps":   steps_done,
                 })
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.01)
 
         await self.sio.emit("training_progress", {"percent": 100, "steps": steps_done})
         print(f"[Training] Complete. train_steps={steps_done}, epsilon={self.agent.epsilon:.4f}")
@@ -652,6 +657,11 @@ class SimulationRunner:
         if day_decisions > 0:
             m = self._collect_metrics(day_decisions, "DQN", env)
             all_metrics.append(m)
+            await self.sio.emit("daily_summary", {
+                "day": env.clock.day,
+                "phase": 3,
+                "metrics_per_policy": {"DQN": m},
+            })
 
         return all_metrics
 
