@@ -11,4 +11,6 @@ uvicorn>=0.23.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 streamlit>=1.20.0
+python-socketio[asyncio]>=5.0.0
+aiofiles>=23.0.0
 mcp>=1.0.0

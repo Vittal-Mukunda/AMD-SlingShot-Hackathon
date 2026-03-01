@@ -1,189 +1,241 @@
-# RL-Driven Agentic Project Manager
+# DQN Workforce Scheduler Dashboard
 
-**AMD SlingShot Hackathon** - A full reinforcement learning pipeline for optimal dynamic project task allocation under partial observability, fatigue, deadline shocks, and stochastic task completion.
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org) [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org) [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+An industrial-grade, locally hosted web dashboard that interfaces with a **Continual Online Deep Q-Network (DQN) Workforce Scheduling System**. It runs a two-phase simulation — Phase 1 benchmarks 5 baseline schedulers, Phase 2 puts the DQN agent in control — streaming all data to the dashboard in real time via WebSockets.
 
 ---
 
-## Table of Contents
+## System Architecture
 
-1. [Project Overview](#1-project-overview)
-2. [Architecture Overview](#2-architecture-overview)
-3. [Quick Start](#3-quick-start)
-4. [Installation](#4-installation)
-5. [Running the Program](#5-running-the-program)
-6. [POMDP Formulation](#6-pomdp-formulation)
-7. [Environment Dynamics](#7-environment-dynamics)
-8. [Directory Structure](#8-directory-structure)
+```mermaid
+graph TD
+    subgraph Frontend ["Frontend (React + Vite — :5173)"]
+        CP[ConfigPage]
+        SP[SimulationPage]
+        AP[AnalyticsPage]
+        ZS[Zustand Store]
+        SK[useSocket Hook]
+    end
 
----
+    subgraph Backend ["Backend (FastAPI + Socket.IO — :8000)"]
+        API[REST API /api/*]
+        SIO[Socket.IO Server]
+        SR[SimulationRunner]
+        P1[Phase 1: 5 Baseline Envs]
+        P2[Phase 2: DQN Online Learning]
+    end
 
-## 1. Project Overview
+    subgraph Core ["Simulation Core"]
+        ENV[ProjectEnv]
+        DQN[DQN Agent<br/>Dueling + PER + Double]
+        BL[Baselines<br/>Greedy · Skill · FIFO · Hybrid · Random]
+    end
 
-This system trains an **Online Deep Q-Network (DQN)** agent to manage a portfolio of software engineering tasks assigned to workers in a simulated project environment. The agent must:
+    CP -- POST /api/initialize --> API
+    API --> SR
+    SR --> P1
+    SR --> P2
+    P1 --> BL
+    P2 --> DQN
+    BL --> ENV
+    DQN --> ENV
 
-- Assign tasks to workers with **partially observable skill levels** (learned via Bayesian belief updates)
-- Manage **worker fatigue** to prevent quality degradation and burnout
-- Respond to **sudden deadline shocks**
-- Maximize **throughput and quality** while minimizing delays and overload
-
-Because the architecture has transitioned exclusively to an online DQN framework, previous references to offline reinforcement learning have been deprecated and removed. The system is benchmarked against 4 hand-crafted heuristic baselines.
-
----
-
-## 2. Architecture Overview
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    Online DQN Agent (v4)                          │
-│                                                                    │
-│  ┌──────────────┐    ┌─────────────────────────────────────────┐  │
-│  │  96-dim POMDP│    │         Dueling Q-Network               │  │
-│  │  Observation │───>│  Input(96) -> 256 -> 256 [LayerNorm+ReLU] │  │
-│  └──────────────┘    │       |               |                 │  │
-│                       │  Value(1)      Advantage(140)           │  │
-│  ┌──────────────┐    │       └────── Q(s,a) ─────┘            │  │
-│  │   PER Buffer │<───│    Q = V + A - mean(A)                  │  │
-│  │  (Sum-Tree)  │    └─────────────────────────────────────────┘  │
-│  └──────┬───────┘                                                  │
-│         │ IS-weighted      Double DQN targets                      │
-│         V                 policy selects, target evaluates         │
-│  ┌──────────────┐    ┌──────────────┐   ┌──────────────────────┐  │
-│  │ Mini-batch   │───>│ Huber Loss   │──>│ Adam + CosineWarmLR  │  │
-│  │  B=32        │    │ + IS weights │   │ LR=0.0003, T0=2000 ep│  │
-│  └──────────────┘    └──────────────┘   └──────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**Key improvements in v4 over v3:**
-
-| Component | v3 | v4 |
-|-----------|----|----|
-| State Dim | 88-dim | 96-dim |
-| Mode | Offline/Passive | Strictly Online learning directly mapping 96-dim observations |
-| Target computation | Double DQN | Double DQN (decoupled select/evaluate) |
-| Batch size | 128 | 32 (For fast online updates) |
-| LR | 0.001 | 0.0003 |
-
----
-
-## 3. Quick Start
-
-```powershell
-# Install dependencies
-pip install -r requirements.txt
-
-# Run interactive demo
-python demo_run.py
+    SK -- WebSocket --> SIO
+    SIO -- tick_update / gantt_block / daily_summary --> SK
+    SK --> ZS
+    ZS --> SP
+    ZS --> AP
 ```
 
 ---
 
-## 4. Installation
-
-### Requirements
-- Python 3.10+
-- PyTorch 2.0+ (CPU or CUDA)
-- NumPy, SciPy, Matplotlib, Pandas
-
-### Steps
-
-```powershell
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/AMD-SlingShot-Hackathon.git
-cd AMD-SlingShot-Hackathon
-
-# Create a virtual environment (recommended)
-python -m venv .venv
-.venv\Scripts\activate          # Windows PowerShell
-
-# Install Python dependencies
-pip install -r requirements.txt
-```
-
----
-
-## 5. Running the Program
-
-The system is executed through specific entry points. The primary runner for the demonstration is `demo_run.py`, and the entire pipeline is handled by `run_pipeline.py`.
-
-### 5.1 Interactive Demo
-
-To witness the agent perform comparative analysis dynamically against baselines:
-
-```powershell
-python demo_run.py
-```
-
-**What this command does:**
-1. Triggers `interactive_config.py` which prompts you to define a random seed, project goal, task limit, and optionally define worker traits manually.
-2. The interactive script parses your text and overrides the global variables in `config.py`.
-3. It then initializes the `ProjectEnv` using the chosen specific seed.
-4. The system then boots up the baselines one by one, scoring them behind the scenes (No visual plot is printed for Phase 1 - 1-Month Observational run).
-5. Finally, the system plots the Phase 2 (1-Week Operational run) visualizer containing task assignments for both the DQN Agent and Baseline agents to allow direct competitive evaluation on tasks completed, overload events, and quality outputs.
-
-### 5.2 Full Pipeline Execution
-
-To train the DQN from scratch and review statistical differences against baselines:
-
-```powershell
-# Train Agent
-python run_pipeline.py --train --episodes 5000
-
-# Full Evaluation
-python run_pipeline.py --full
-```
-
-**What these commands do:**
-- `--train`: Bootstraps the `train_dqn.py` loop which orchestrates learning for the DQN agent directly in `ProjectEnv`. At the end of 5000 iterations, the system will save the `best_model.pth` in the `checkpoints` directory.
-- `--full`: Chains multiple stages sequentially. It will (1) train the agent, (2) run through validation stages against default heuristics, and (3) dump graphical metrics like learning_curves and CSV logs to the `results/` folder for analysis.
-
----
-
-## 6. POMDP Formulation
-
-The task allocation problem is modelled as a **Partially Observable Markov Decision Process (POMDP)**. Partial observability is central: worker skill levels are hidden. The agent maintains a Belief State updated incrementally with each task completion observation via Bayesian inference.
-
-For full theoretical details, navigate to the `docs/team_onboarding/` and `docs/` directories.
-
----
-
-## 7. Environment Dynamics
-
-### Worker Fatigue and Overload
-- Workers accumulate fatigue dynamically. There is a penalty specifically configured for overloaded workers (when assigned assignments exceed internal limits). 
-- Burnout renders a worker unavailable.
-- Output quality drops off exponentially when a worker is continuously overloaded, defined implicitly by an internal `fatigue_rate` and `base_efficiency`. 
-
-### Phases
-- **Phase 1 (1 Month)**: The initial observational period.
-- **Phase 2 (1 Week)**: 5 consecutive days of 8-hour shifts representing the strict evaluation testing phase.
-
----
-
-## 8. Directory Structure
+## Directory Structure
 
 ```
 AMD-SlingShot-Hackathon/
-├── interactive_config.py      <-- Setup UI before starting demo
-├── run_pipeline.py            <-- End-to-end CLI orchestrator
-├── demo_run.py                <-- Interactive demonstration UI
-├── config.py                  <-- All hyperparameters & paths
-├── requirements.txt
+├── package.json              # Root: unified npm run dev command
+├── requirements.txt          # Python backend dependencies
+├── config.py                 # Global hyperparameters & environment settings
+├── continual_scheduler.py    # Continual scheduling orchestration
+├── run_pipeline.py           # Full offline training pipeline
 │
-├── agents/                    <-- Agent configurations (DQN)
-├── environment/               <-- POMDP environments (Worker, Task)
-├── baselines/                 <-- Baseline testing logic
-├── training/                  <-- Training loops
-├── evaluation/                <-- Stats calculation tools
-├── visualization/             <-- Generators for charts/grids
+├── backend/                  # FastAPI + Socket.IO server
+│   ├── main.py               # ASGI app, REST endpoints, Socket.IO events
+│   ├── simulation_runner.py  # Two-phase async simulation orchestrator
+│   └── readme_generator.py   # Auto README generation via WebSocket
 │
-├── docs/                      <-- Mathematical and theoretical logic
-│   └── team_onboarding/       <-- Parameter tweaking and Onboarding docs
+├── agents/
+│   └── dqn_agent.py          # Dueling DQN + Double DQN + PER + Cosine LR
 │
-├── tests/                     <-- Unit tests
-├── checkpoints/               <-- Model checkpoints (auto-created)
-├── results/                   <-- CSVs and plots (auto-created)
-└── logs/                      <-- Training logs (auto-created)
+├── baselines/
+│   ├── greedy_baseline.py    # Greedy least-loaded assignment
+│   ├── skill_baseline.py     # Skill-matched assignment with Bayesian belief
+│   ├── stf_baseline.py       # Shortest-Task-First (displayed as "FIFO")
+│   ├── hybrid_baseline.py    # Hybrid urgency + skill policy
+│   └── random_baseline.py   # Random assignment (sanity baseline)
+│
+├── environment/
+│   └── project_env.py        # OpenAI-Gym-compatible scheduling environment
+│
+├── frontend/                 # React + Vite TypeScript dashboard
+│   ├── src/
+│   │   ├── pages/            # ConfigPage, SimulationPage, AnalyticsPage
+│   │   ├── components/       # GanttChart, WorkerSidebar, TaskQueue, ComparisonStrip
+│   │   ├── hooks/            # useSocket.ts, useSimulation.ts
+│   │   ├── store/            # simulationStore.ts (Zustand)
+│   │   └── types/            # simulation.ts, config.ts, metrics.ts
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.ts
+│
+├── results/                  # Auto-generated CSV metrics
+├── checkpoints/              # Saved DQN model checkpoints
+└── logs/                     # Training and simulation logs
 ```
+
+---
+
+## Environment Setup
+
+### 1. Python (Backend)
+
+```bash
+# From project root
+python -m venv .venv
+
+# Windows:
+.venv\Scripts\activate
+
+# macOS/Linux:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 2. Node.js (Frontend + Unified Startup)
+
+```bash
+# Install root concurrently package
+npm install
+
+# Install frontend dependencies
+cd frontend && npm install && cd ..
+```
+
+---
+
+## Running the Application
+
+### Single Command (Recommended)
+
+```bash
+npm run dev
+```
+
+This uses `concurrently` to start both servers simultaneously:
+- **Backend**: `uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`
+- **Frontend**: Vite dev server at `http://localhost:5173`
+
+Open your browser at: **http://localhost:5173**
+
+### Manual (Two Terminals)
+
+Terminal 1 — Backend:
+```bash
+.venv\Scripts\python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Terminal 2 — Frontend:
+```bash
+cd frontend && npm run dev
+```
+
+---
+
+## Configuration Guide
+
+Access the **Control Panel** at `http://localhost:5173`. Configure:
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| Phase 1 Days | Baseline observation period | 20 days (1 month) |
+| Phase 2 Days | DQN-controlled scheduling | 5 days (1 week) |
+| Workers | Count (1–25) or manual config per-worker | 5 auto |
+| Worker Seed | Random seed for reproducible worker generation | 42 |
+| Arrival Distribution | poisson / uniform / burst / custom | poisson |
+| Task Count | Total tasks across simulation | 200 |
+| Random Seed | Global reproducibility seed | 42 |
+
+---
+
+## Module Architecture
+
+### Simulation Environment (`environment/project_env.py`)
+OpenAI Gym-compatible environment with:
+- 8h workday (16 × 30min slots), Mon–Fri schedule
+- Heterogeneous workers: per-worker skill, fatigue rate, recovery rate, burnout resilience
+- Dynamic Poisson task arrivals (no lookahead)
+- State vector: 96-dimensional (5 workers × 5 + 10 visible tasks × 5 + beliefs + global)
+- Action space: 140 actions (20 tasks × 5 workers + 20 defer + 20 escalate)
+
+### Baseline Schedulers (`baselines/`)
+All run simultaneously on independent environment copies in Phase 1:
+
+| Name | Strategy |
+|------|----------|
+| **Greedy** | Least-loaded worker, highest-priority task first |
+| **Skill** | Bayesian skill estimation, match task requirements |
+| **FIFO** | Shortest task first to maximize throughput |
+| **Hybrid** | Urgency + skill combined heuristic |
+| **Random** | Uniform random valid action (sanity check) |
+
+### DQN Agent (`agents/dqn_agent.py`)
+- **Architecture**: Dueling DQN (Value + Advantage streams)
+- **Training**: Double DQN with Prioritized Experience Replay (PER)
+- **LR Schedule**: Cosine Annealing with Warm Restarts
+- **Phase 1**: Passive observation — stores transitions, does not control
+- **Phase 2**: Full online learning, per-decision epsilon decay
+
+### Backend API (`backend/main.py`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/initialize` | Start simulation with config |
+| `POST` | `/api/pause` | Pause running simulation |
+| `POST` | `/api/resume` | Resume paused simulation |
+| `GET`  | `/api/status` | Current simulation state |
+| `GET`  | `/api/export` | Download metrics CSV |
+| `POST` | `/api/generate-readme` | Auto-generate all READMEs |
+
+### Frontend Dashboard (`frontend/src/`)
+
+| Page | Route | Description |
+|------|-------|-------------|
+| `ConfigPage` | `/` | Simulation configuration wizard |
+| `SimulationPage` | `/simulation` | Live real-time view with Gantt charts |
+| `AnalyticsPage` | `/analytics` | Post-run analytics & comparison |
+
+### WebSocket Events (Backend → Frontend)
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `tick_update` | tick, day, phase, workers, queue | Live state every N decisions |
+| `gantt_block` | task_id, worker_id, start/end_tick, urgency, policy | One assignment block |
+| `daily_summary` | day, phase, metrics_per_policy | End-of-day metrics for all policies |
+| `phase_transition` | new_phase, baseline_results_snapshot | Phase 1 complete |
+| `simulation_complete` | final_metrics | Full results |
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend framework | React 19 + TypeScript + Vite 7 |
+| Styling | Tailwind CSS v4 + custom CSS tokens |
+| Charts | Recharts (bar, radar, line) + custom SVG Gantt |
+| State management | Zustand |
+| WebSocket client | socket.io-client v4 |
+| Routing | React Router v6 |
+| Backend framework | FastAPI + python-socketio (AsyncServer) |
+| ML framework | PyTorch |
+| Async runtime | asyncio + uvicorn |
