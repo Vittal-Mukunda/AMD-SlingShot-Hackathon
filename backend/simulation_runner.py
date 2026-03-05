@@ -151,7 +151,7 @@ class SimulationRunner:
                 cfg_module.PHASE2_DAYS = max(1, sim_days - cfg_module.PHASE1_DAYS)
 
         # v10 Fix 4: Comprehensive startup log with all effective values
-        print(f"[runner] ══════════════════════════════════════════════════")
+        print(f"[runner] ==================================================")
         print(f"[runner]   SIM_DAYS       = {cfg_module.SIM_DAYS}")
         print(f"[runner]   PHASE1_DAYS    = {cfg_module.PHASE1_DAYS}")
         print(f"[runner]   PHASE2_DAYS    = {cfg_module.PHASE2_DAYS}")
@@ -160,7 +160,7 @@ class SimulationRunner:
         print(f"[runner]   tasks_per_day  = {cfg_module.TASK_ARRIVAL_RATE}")
         print(f"[runner]   workers        = {cfg.num_workers}")
         print(f"[runner]   max_load       = {cfg_module.MAX_WORKER_LOAD}")
-        print(f"[runner] ══════════════════════════════════════════════════")
+        print(f"[runner] ==================================================")
 
         # v9 Fix 1: Configure epsilon scoped to Phase 2 decisions only
         tasks_per_day = getattr(cfg, 'tasks_per_day', None) or getattr(cfg_module, 'TASK_ARRIVAL_RATE', 4.0)
