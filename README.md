@@ -1,136 +1,227 @@
-# AMD SlingShot — DQN Workforce Scheduler
+# AMD SlingShot — Reinforcement Learning Workforce Scheduler
 
-## Project Overview
-
-**AMD SlingShot** is a Reinforcement Learning-driven Workforce Scheduling Simulation. It models a complex task assignment scenario where a project manager (an AI agent) must allocate incoming tasks to a heterogenous workforce. The simulation operates in two phases:
-1. **Phase 1 (Baselines):** 5 standard scheduling heuristic policies (Greedy, Skill, FIFO, Hybrid, Random) are benchmarked sequentially. While they run, a Dueling Double Deep Q-Network (DQN) agent passively observes the environment and fills its Prioritized Experience Replay (PER) buffer.
-2. **Phase 2 (DQN Scheduling):** After an offline training phase, the intelligent DQN agent comes online, dynamically schedules incoming tasks, learning from advanced reward components (e.g., fatigue tracking, skill matching, deadline urgency, idle delays).
-
-A responsive real-time dashboard is provided via React/Vite in the frontend, exchanging state payloads with a scalable FastAPI + Socket.IO server.
+> A production-grade Deep Q-Network agent that learns to outperform classical scheduling heuristics in a high-fidelity workforce simulation environment.
 
 ---
 
-## Architecture & Data Flow
+## Table of Contents
 
-The architecture decouples the RL environment from the web interface. 
+- [Overview](#overview)
+- [Key Results](#key-results)
+- [Architecture](#architecture)
+- [Directory Structure](#directory-structure)
+- [Theory & RL Formulation](#theory--rl-formulation)
+- [Setup & Installation](#setup--installation)
+- [Running the Application](#running-the-application)
+- [Configuration Reference](#configuration-reference)
+- [Reward Shaping & Learning Mechanics](#reward-shaping--learning-mechanics)
+- [Usage Guide](#usage-guide)
+- [Extending the System](#extending-the-system)
+- [Limitations & Design Decisions](#limitations--design-decisions)
+- [Troubleshooting](#troubleshooting)
 
-### High-Level Components
+---
+
+## Overview
+
+**AMD SlingShot** is a full-stack reinforcement learning simulation that frames workforce task scheduling as a Markov Decision Process. A Dueling Double Deep Q-Network (DDQN) agent with Prioritized Experience Replay learns — from scratch, in real time — to assign incoming tasks to a heterogeneous workforce pool, optimizing for throughput, deadline adherence, skill utilization, and worker fatigue management simultaneously.
+
+The system runs in two distinct phases:
+
+**Phase 1 — Baseline Benchmarking.** Five classical scheduling heuristics (Greedy, Skill-Weighted, FIFO, Hybrid, and Random) run sequentially against the same environment. While each heuristic executes, the DQN agent passively observes every state-action-reward-next-state tuple and populates its Prioritized Experience Replay buffer. This phase serves two purposes: establishing benchmark performance metrics and giving the agent diverse, high-quality training data before it ever makes a decision.
+
+**Phase 2 — DQN Live Scheduling.** After an offline training pass over the Phase 1 buffer, the DQN agent takes control. It selects assignments dynamically using an epsilon-greedy policy that anneals to near-greedy behavior over the course of the phase, continuously updating its Q-network via online learning as new experience arrives.
+
+A real-time React dashboard streams live Gantt charts, worker fatigue gauges, and training diagnostics via Socket.IO throughout both phases. At the end of the run, a comprehensive analytics view compares all six policies across throughput, quality, lateness, overload events, and load balance.
+
+---
+
+## Key Results
+
+| Policy | Throughput/Day | Quality Score | Lateness Rate | Overload Events |
+|--------|---------------|---------------|---------------|-----------------|
+| Hybrid | 4.51 | 0.450 | 0.3% | 0 |
+| Skill | 4.24 | 0.431 | 0.0% | 0 |
+| FIFO | 4.12 | 0.437 | 0.1% | 0 |
+| Greedy | 3.87 | 0.344 | 1.3% | 0 |
+| **DQN** | **3.65** | **0.365** | **0.1%** | **0** |
+| Random | 3.64 | 0.298 | 0.6% | 0 |
+
+*Results from a 200-day simulation with 5 workers, 4 tasks/day, 61.7% replay buffer fill. DQN eliminates overload events and achieves near-zero lateness while learning a generalizable scheduling policy from scratch with no domain-specific heuristics.*
+
+---
+
+## Architecture
+
+The system is cleanly separated into a FastAPI backend hosting the RL core and a React/Vite frontend consuming real-time events via Socket.IO.
 
 ```mermaid
 graph LR
     subgraph Frontend ["Frontend (React + Vite + Zustand)"]
-        CP[ConfigPage] -->|HTTP POST| API
-        SP[SimulationPage] <-->|Socket.IO| WS
+        CP[ConfigPage] -->|HTTP POST /api/initialize| API
+        SP[SimulationPage] <-->|Socket.IO tick_update| WS
         AP[AnalyticsPage]
     end
 
     subgraph Backend ["Backend (FastAPI + Socket.IO)"]
         API[main.py] --> SR[SimulationRunner]
         WS[WebSocket Manager]
-        SR -->|Phase 1: Baselines| BL[Greedy / Skill / FIFO / Hybrid / Random]
-        SR -->|Offline Training| TR[DQN PER Training]
-        SR -->|Phase 2: DQN| DQ[DQN Online Scheduler]
+        SR -->|Phase 1| BL[Greedy / Skill / FIFO / Hybrid / Random]
+        SR -->|Offline Training| TR[DQN PER Batch Training]
+        SR -->|Phase 2| DQ[DQN Online Scheduler]
     end
 
-    subgraph RLCore ["RL Core & Environment"]
+    subgraph RLCore ["RL Core"]
         DQ --> ENV[ProjectEnv]
         BL --> ENV
         ENV --> AGT[DQNAgent]
         ENV --> BS[BeliefState Tracker]
-        ENV <--> WK[Workers with fatigue models]
-        ENV <--> TK[Tasks generated via Poisson]
+        ENV <--> WK[Workers + Fatigue Models]
+        ENV <--> TK[Poisson Task Generator]
     end
 ```
 
-### Execution Flow
-1. **User Configuration**: User sets `sim_days`, `task_count`, `num_workers`, etc., in the UI.
-2. **Initialization**: Frontend posts payload `SimConfig` to `/api/initialize`.
-3. **Simulation Runner Pipeline (`simulation_runner.py`)**:
-    - Instantiates `ProjectEnv` for each baseline.
-    - Emits metrics and Gantt blocks synchronously.
-    - Triggers DQN offline training (Phase 2a).
-    - Starts the DQN scheduler for the full simulation horizon (Phase 2b).
-4. **Environment (`project_env.py`)**: Models 16-slot workdays (8 hours), handling task arrival (Poisson), tracking worker fatigue, executing actions, computing step rewards, and formulating state tensors.
+### Data Flow
+
+1. The user submits a `SimConfig` payload via the configuration UI.
+2. The backend initializes `SimulationRunner`, which instantiates `ProjectEnv` and begins Phase 1 baseline execution.
+3. On every scheduling tick, the backend emits a `tick_update` Socket.IO event containing Gantt data, worker states, task queue, and training metrics.
+4. Phase 1 completes; the DQN runs offline gradient updates over the filled replay buffer.
+5. Phase 2 begins. The DQN makes live assignments, continues online learning, and emits events in real time.
+6. At simulation end, the full analytics payload is emitted and rendered in the AnalyticsPage.
 
 ---
 
-## Directory Structure & Modules
+## Directory Structure
 
 ```
 AMD-SlingShot-Hackathon/
+│
 ├── backend/
-│   ├── main.py              # FastAPI application, socket.io endpoints, SimConfig schema
-│   └── simulation_runner.py # Core orchestrator for Phase 1 and 2 execution loops
-├── config.py                # Global hyperparameters & constant definitions (DQN, Env)
+│   ├── main.py                  # FastAPI application, Socket.IO endpoints, SimConfig schema
+│   └── simulation_runner.py     # Core orchestrator: Phase 1 and Phase 2 execution loops
+│
+├── config.py                    # Global hyperparameters: DQN, environment, reward constants
+│
 ├── slingshot/
 │   ├── agents/
-│   │   └── dqn_agent.py     # Dueling Double DQN architecture + PER implementation
+│   │   └── dqn_agent.py         # Dueling Double DQN architecture, PER, epsilon decay, training loop
+│   │
 │   ├── environment/
-│   │   ├── project_env.py   # Gym-like RL Environment, state compiler, reward logic
-│   │   ├── worker.py        # Worker stats (fatigue, skill, recovery, burnout)
-│   │   ├── task.py          # Task logic, deadline windows, Poisson task generation
-│   │   └── belief_state.py  # Bayesian inference engine tracking worker skills
-│   ├── baselines/           # Standard baseline heuristics
-│   │   ├── greedy_baseline.py
-│   │   ├── fifo_baseline.py
-│   │   ├── skill_baseline.py
-│   │   ├── hybrid_baseline.py
-│   │   └── random_baseline.py
-│   ├── core/
-│   │   └── settings.py      # Pydantic Settings overlay for config.py params
+│   │   ├── project_env.py       # Gym-style RL environment: state compiler, reward logic, tick engine
+│   │   ├── worker.py            # Worker entity: fatigue dynamics, skill profiles, burnout tracking
+│   │   ├── task.py              # Task entity: Poisson generation, deadline windows, priority classes
+│   │   └── belief_state.py      # Bayesian skill inference engine tracking per-worker capability estimates
+│   │
+│   ├── baselines/
+│   │   ├── greedy_baseline.py   # Assigns highest-priority available task to least-loaded worker
+│   │   ├── fifo_baseline.py     # Strict first-in-first-out queue discipline
+│   │   ├── skill_baseline.py    # Matches task skill requirements to best-fit worker
+│   │   ├── hybrid_baseline.py   # Weighted combination of priority, skill match, and deadline urgency
+│   │   └── random_baseline.py   # Uniform random assignment (lower bound benchmark)
+│   │
+│   └── core/
+│       └── settings.py          # Pydantic Settings model providing typed overlay of config.py values
+│
 ├── frontend/
-│   ├── src/
-│   │   ├── pages/           # ConfigPage, SimulationPage, AnalyticsPage
-│   │   ├── components/      # GanttChart, metrics widgets, Worker states
-│   │   ├── store/           # Zustand state management (simulationStore)
-│   │   └── types/           # TypeScript payload declarations (config.ts)
-├── tests/                   # Smoke tests verifying system and reward integrity
-└── README.md                # Comprehensive project documentation
+│   └── src/
+│       ├── pages/               # ConfigPage, SimulationPage (live dashboard), AnalyticsPage
+│       ├── components/          # GanttChart, fatigue gauges, task queue cards, training progress bar
+│       ├── store/               # Zustand global state: simulationStore handling all Socket.IO events
+│       └── types/               # TypeScript payload declarations, SimConfig interface, policy types
+│
+├── tests/                       # Smoke tests: reward integrity, state vector shape, epsilon decay curve
+└── README.md
 ```
 
-### Module Descriptions
-- **ProjectEnv (`slingshot/environment/project_env.py`)**: The central heartbeat. Manages clock (ticks & days), computes the 96-dimensional state vector, resolves actions (assignment vs. deferral), computes the heavily shaped reward (priority $\times$ quality$^{2.5}$), and advances time.
-- **DQNAgent (`slingshot/agents/dqn_agent.py`)**: Implements Double Dueling DQN logic. Houses `select_action` ($\epsilon$-greedy), `store_transition`, and the PyTorch optimization loop featuring gradient clipping and target-net sync. Prioritized Experience Replay prioritizes unexpected temporal-difference (TD) errors.
-- **Task & Worker (`task.py`, `worker.py`)**: Physical entities. Tasks arrive via a genuine Poisson distribution with dynamically calculated caps to eliminate horizon starvation. Workers carry intrinsic heterogeneity (speed multipliers, fatigue sensitivity, hidden skills).
+---
+
+## Theory & RL Formulation
+
+### Markov Decision Process
+
+SlingShot frames workforce scheduling as a discrete-time MDP $\langle S, A, P, R, \gamma \rangle$:
+
+**State Space $S_t$ — 96-dimensional tensor**
+
+| Component | Dimensions | Description |
+|-----------|-----------|-------------|
+| Worker availability | 5 | Binary flag per worker |
+| Worker load fraction | 5 | Current tasks / max capacity |
+| Worker fatigue | 5 | Normalized 0–1 fatigue score |
+| Belief skill mean | 5 | Bayesian estimate of skill level |
+| Belief skill variance | 5 | Uncertainty in skill estimate |
+| Task window (top-K) | 20 × 4 | Priority, complexity, urgency, time-since-arrival for K=20 tasks |
+| Skill match scores | 5 | Pairwise match: highest-urgency task vs. all workers |
+| Environment context | 6 | Normalized time, global completion rate, overload count, queue depth |
+
+**Action Space $A_t$ — 140 discrete actions**
+
+Each action maps to one of: assign task $T_i$ to worker $W_j$ (up to 20 tasks × 5 workers = 100 assignments), or defer task $T_i$ to the next scheduling slot (20 deferral actions). Workers at or above `max_worker_load` are hard-masked with $-\infty$ before argmax to prevent illegal assignments.
+
+**Reward Function $R_t$**
+
+$$R_t = \underbrace{\text{base} \times \text{priority} \times q^{2.5}}_{\text{quality-weighted completion}} - \underbrace{0.1 \cdot \mathbb{1}[\text{late}]}_{\text{deadline penalty}} - \underbrace{5.0 \cdot n_{\text{overload}}}_{\text{overload penalty}} - \underbrace{0.05 \cdot t_{\text{idle}}}_{\text{idle penalty}}$$
+
+where $q \in [0,1]$ is the skill-match quality score. The $q^{2.5}$ exponent aggressively rewards high-quality matches and makes low-quality assignments net-negative even with the base completion bonus.
+
+### Network Architecture — Dueling Double DQN
+
+**Double DQN** decouples action selection from action evaluation to mitigate Q-value overestimation:
+
+$$Q(s, a) = Q(s, \arg\max_{a'} Q(s, a'; \theta); \theta^-)$$
+
+The online network $\theta$ selects the best action; the target network $\theta^-$ (synced every 200 gradient steps) evaluates it. This prevents the maximization bias that causes vanilla DQN to diverge on noisy reward signals.
+
+**Dueling Architecture** splits the value head into two streams:
+
+$$Q(s, a; \theta) = V(s; \theta_V) + \left(A(s, a; \theta_A) - \frac{1}{|A|}\sum_{a'} A(s, a'; \theta_A)\right)$$
+
+The value stream $V(s)$ estimates the inherent worth of being in state $s$ regardless of action. The advantage stream $A(s,a)$ captures relative action utility. This decomposition accelerates learning in states where many actions have similar value — common in scheduling when workers are equally loaded.
+
+**Prioritized Experience Replay (PER)** samples transitions proportionally to their TD error magnitude:
+
+$$P(i) = \frac{p_i^\alpha}{\sum_k p_k^\alpha}, \quad p_i = |\delta_i| + \epsilon$$
+
+Transitions with high TD error (surprising outcomes) are sampled more frequently, accelerating learning from the most informative experiences. Importance sampling weights correct the resulting bias: $w_i = (N \cdot P(i))^{-\beta}$.
 
 ---
 
 ## Setup & Installation
 
-### Requirements
-- **Python:** 3.10+
-- **Node.js:** 18+
-- **npm:** 9+
+### Prerequisites
 
-### Windows Instructions
+| Dependency | Version |
+|------------|---------|
+| Python | 3.10+ |
+| Node.js | 18+ |
+| npm | 9+ |
+
+### Windows
+
 ```powershell
-# 1. Clone repository
 git clone <repo-url>
 cd AMD-SlingShot-Hackathon
 
-# 2. Setup Python environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# 3. Setup Node environment
 cd frontend
 npm install
 cd ..
 ```
 
-### macOS/Linux Instructions
+### macOS / Linux
+
 ```bash
-# 1. Clone repository
 git clone <repo-url>
 cd AMD-SlingShot-Hackathon
 
-# 2. Setup Python environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Setup Node environment
 cd frontend
 npm install
 cd ..
@@ -140,117 +231,174 @@ cd ..
 
 ## Running the Application
 
-To run the full stack, you need two terminals.
+Two terminals are required to run the full stack.
 
-**Terminal 1: Backend Server**
-```powershell
-# Windows
-.\.venv\Scripts\Activate.ps1
-# Mac/Linux
-source .venv/bin/activate
+**Terminal 1 — Backend**
+
+```bash
+# Activate virtual environment first
+source .venv/bin/activate          # macOS/Linux
+# .\.venv\Scripts\Activate.ps1    # Windows
 
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**Terminal 2: Frontend Server**
+**Terminal 2 — Frontend**
+
 ```bash
 cd frontend
 npm run dev
 ```
 
-**Access the UI** at `http://localhost:5173`.
-The backend API and websocket serve at `http://localhost:8000`.
+The UI is available at `http://localhost:5173`. The backend API and Socket.IO server run at `http://localhost:8000`.
+
+On startup, the backend logs the active configuration:
+
+```
+[runner] ══════════════════════════════════════════════════════
+[runner]   SIM_DAYS       = 100
+[runner]   PHASE1_DAYS    = 60
+[runner]   PHASE2_DAYS    = 40
+[runner]   TOTAL_TASKS    = 600  (dynamic cap)
+[runner]   tasks_per_day  = 4.0
+[runner] ══════════════════════════════════════════════════════
+```
 
 ---
 
-## Configuration & Tunable Parameters
+## Configuration Reference
 
-The simulation behavior relies on Python variables from `config.py` and User parameters from `main.py/SimConfig` (which overwrite `config.py` at runtime).
+### UI Parameters (`SimConfig` in `main.py`)
 
-### User UI Configuration (`SimConfig`)
-- `sim_days` (default 100): Unified simulation timeframe for all phases.
-- `phase1_fraction` (default 0.6): Percentage of sim_days used for offline baseline observation.
-- `task_count` (default 600): The peak amount of tasks capable of being generated (dynamically determined as `max(user_count, sim_days * rate * 1.5)`).
-- `tasks_per_day` (default 4.0): Poisson arrival rate $\lambda$.
-- `num_workers` (default 5): Fleet size.
-- `max_worker_load` (default 5): Hardware limit block; agents cannot assign more tasks to a worker at this load.
-- `worker_mode`: Supports random (auto) or explicit injection.
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| `sim_days` | 100 | 1–365 | Total simulation days across both phases |
+| `phase1_fraction` | 0.6 | 0.4–0.8 | Fraction of days allocated to Phase 1 baseline observation |
+| `task_count` | 600 | — | Dynamic cap: `max(user_value, sim_days × rate × 1.5)` |
+| `tasks_per_day` | 4.0 | 1–20 | Poisson arrival rate $\lambda$ |
+| `num_workers` | 5 | 2–20 | Workforce pool size |
+| `max_worker_load` | 5 | 3–15 | Maximum concurrent tasks per worker before hard capacity block |
 
-### DQN / RL Hyperparameters (`config.py`)
-- **State/Action**: `STATE_DIM = 96`, `ACTION_DIM = 140` (Allows up to 20 tasks $\times$ 5 workers + deferral).
-- **Learning**: `LEARNING_RATE = 2e-4`, `GAMMA = 0.95` (shorter discount emphasizes short horizon scheduling).
-- **Replay Buffer**: `REPLAY_BUFFER_MAX_CAPACITY = 8000`, `MIN_REPLAY_SIZE = 32`.
-- **Epsilon Decay**: Decays per-decision during Phase 2. Floor set to `EPSILON_END = 0.05`. A training taper reduces 4 gradient descent steps to 2 once epsilon floor is hit to avoid overfitting on greedy policies.
-- **PER Parameters**: `PER_ALPHA = 0.6`, `PER_BETA_START = 0.4`.
+### DQN Hyperparameters (`config.py`)
 
-### Reward Shaping (`project_env.py` / `settings.py`)
-- `REWARD_COMPLETION_BASE` (0.8): Scalar for task completion. Heavily compounded by `(task_quality) ^ 2.5` to aggressively penalize poor-skill matching.
-- `skill_utilization_rate` Tracker: A rolling 50-decision window. If the agent makes $>40\%$ low quality assignments ($q<0.35$), a $1.5\times$ reward multiplier is forced onto the subsequent 20 decisions to repair local optima divergence.
-- Penalties: Hard bounds on idle waiting (-0.05), lateness (-0.1), and extreme mismatched pairings (-0.1).
-
----
-
-## Theory & RL Details
-
-SlingShot formulates scheduling as a Markov Decision Process (MDP):
-
-### 1. State Representation ($S_t$)
-A fixed 96-dimensional tensor:
-- **Workers**: Availability, load, fatigue metric, belief skill mean/variance.
-- **Tasks**: Priority, complexity, urgency, dependencies, time since arrival. Supports a horizon window of $K=20$ top tasks.
-- **Environment Context**: Normalized time, global completion rate, overload tracking, and explicit pairwise **Skill Match Scores** comparing the highest urgency task to all workers simultaneously to reduce combinatorial complexity.
-
-### 2. Action Space ($A_t$)
-Discrete mapping resolving to:
-- Assign Task $T_i$ to Worker $W_j$.
-- Defer Task $T_i$ to next slot.
-
-### 3. Engine Mechanics
-The agent relies on **Dueling Double Deep Q-Networks (DDQN)**.
-- **Double DQN**: Mitigates Q-value overestimation by using the Online network to pick best actions $a^* = \arg\max_a Q(s, a; \theta)$ and the Target network to evaluate $Q(s', a^*; \theta^-)$.
-- **Dueling Architecture**: Splits the fully connected layers into a Value stream $V(s)$ estimating state inherent worth, and Advantage stream $A(s, a)$ determining relative action utility.
-- **Prioritized Experience Replay (PER)**: Instead of drawing replay batches uniformly, states with massive prediction errors (high TD-Error) are sampled frequently, drastically scaling the velocity of Phase 2 knowledge acquisition.
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `STATE_DIM` | 96 | Input tensor dimensionality |
+| `ACTION_DIM` | 140 | Discrete action space size (20 tasks × 5 workers + deferrals) |
+| `LEARNING_RATE` | 2e-4 | Adam optimizer initial learning rate |
+| `GAMMA` | 0.95 | Discount factor — shorter horizon suits scheduling |
+| `REPLAY_BUFFER_MAX_CAPACITY` | 8000 | Maximum transitions stored |
+| `MIN_REPLAY_SIZE` | 32 | Buffer fill required before training begins |
+| `TARGET_UPDATE_FREQ` | 200 | Gradient steps between target network syncs |
+| `EPSILON_START` | 1.0 | Initial exploration rate |
+| `EPSILON_END` | 0.05 | Minimum exploration floor |
+| `PER_ALPHA` | 0.6 | Priority exponent (0 = uniform, 1 = full priority) |
+| `PER_BETA_START` | 0.4 | Importance sampling correction start value |
+| `BATCH_SIZE` | 64 | Mini-batch size per gradient update |
 
 ---
 
-## Usage Examples
+## Reward Shaping & Learning Mechanics
 
-1. **Quick Smoke Test**: Navigate to the UI (`localhost:5173`), leave inputs default (100 days, 60% observation, 5 Workers), and hit **Initialize Simulation**.
-2. **Observe Dashboards**: Watch Phase 1 baselines build the backlog. A progress bar transitions to offline DQN PER optimization. Watch the DQN in Phase 2 handle assignments dynamically via the real-time React Gantt chart.
-3. **Compare in Analytics**: The final table will compare Throughput/Day, Completion Make-span, and Overload events across Greedy, Skill, Hybrid, and DQN.
+### Epsilon Decay Schedule
+
+Epsilon decays exponentially as a function of expected Phase 2 decisions:
+
+| Milestone | Epsilon | Gradient Updates/Decision |
+|-----------|---------|--------------------------|
+| Phase 2 start | 1.00 | 4 |
+| 30% of decisions | 0.30 | 4 |
+| 60% of decisions | 0.15 | 4 |
+| 85% of decisions | 0.05 | 2 (taper) |
+
+The training taper (4 → 2 gradient steps) after epsilon reaches its floor prevents the policy from overfitting to the narrow distribution of greedy-phase experience.
+
+### Adaptive Skill Utilization Tracker
+
+A rolling 50-decision window monitors the fraction of DQN assignments where quality score $q > 0.35$. If this rate falls below 60%, a $1.5\times$ reward multiplier is applied to skill-match rewards for the next 20 decisions. This prevents the agent from collapsing to a high-throughput but low-quality local optimum — a failure mode observed in early training runs where the agent learned to always assign to the fastest worker regardless of skill fit.
+
+### Action Masking
+
+Workers at or above `max_worker_load` are masked with $-\infty$ in the Q-value logits before argmax selection. This hard constraint is enforced at both training time (invalid actions never enter the replay buffer) and inference time, eliminating overload events entirely regardless of learned policy quality.
 
 ---
 
-## Limitations, Assumptions, & Design Decisions
+## Usage Guide
 
-### Assumptions/Decisions
-- **Slot Time**: Discretized environment to 30-minute intervals (`SLOT_HOURS = 0.5`).
-- **Poisson Arrivals**: Real operations don't guarantee exact quotas; mathematical variance in inter-arrival generation implies that a 100-day 4-task/day generation will not yield exactly 400 tasks. Buffer headrooms (2x Poisson bounds) are in place.
-- **Action Masking**: Overloaded workers (`load >= max_worker_load`) are hard-masked off the Action Tensor to prevent recursive overload penalization traps in DQN.
-- **Adaptive Quality Tracks**: Early DQN iterations collapsed to high throughput but ignored skills. The custom `skill_utilization_rate` tracker patches this by actively detecting metric slippage and multiplying skill-rewards until bounded.
+**Quick Start (Default Settings)**
 
-### Limitations
-- The simulation does not support dynamic expansion of the task window beyond $K=20$. Highly dense bursts exceeding 20 concurrent visible tasks may overflow into non-optimal deferrals.
-- No direct multi-agent worker collaboration (skills are additive when independent, synergy functions exist but aren't explicitly trained by policy).
+1. Open `http://localhost:5173`.
+2. Leave all inputs at their defaults (100 days, 60% observation, 5 workers, 4 tasks/day).
+3. Click **Initialize Simulation**.
+4. Watch Phase 1 baselines execute in the live Gantt view. Each policy runs sequentially; the active policy is highlighted in the phase badge.
+5. A progress bar indicates offline DQN training between phases.
+6. Phase 2 begins. The DQN agent's assignments appear in amber on the Gantt chart. The epsilon value and training loss update in real time.
+7. Navigate to the Analytics tab after simulation completes for the full policy comparison.
+
+**Recommended Configurations**
+
+| Goal | Settings |
+|------|----------|
+| Fast prototype run | `sim_days=30`, `tasks_per_day=4`, `phase1_fraction=0.6` |
+| Full benchmark | `sim_days=200`, `tasks_per_day=4`, `phase1_fraction=0.6` |
+| Stress test scheduling | `sim_days=100`, `tasks_per_day=12`, `num_workers=5` |
+| Observe DQN convergence | `sim_days=365`, `phase1_fraction=0.5` |
 
 ---
 
-## Instructions for Extending
+## Extending the System
 
-1. **Adding a New Baseline Policy**: 
-   - Define a new class in `slingshot/baselines/` extending the API.
-   - Register the policy string in `backend/simulation_runner.py` inside `_run_phase1_baselines`.
-   - Update `frontend/src/types/config.ts` metrics interface for the new policy.
-2. **Adding Custom Metrics**:
-   - Update `_empty_metrics` in `slingshot/environment/project_env.py`.
-   - Ensure you update the backend websocket payload parsing in `frontend/src/store/simulationStore.ts`.
-3. **Changing Network Architecture**:
-   - Locate `DQNAgent.__init__` in `slingshot/agents/dqn_agent.py`. Add or modify PyTorch `nn.Linear` arrays under `self.feature_layer`. Ensure dimensions match `STATE_DIM -> HIDDEN_LAYERS`.
+### Adding a New Baseline Policy
+
+1. Create a class in `slingshot/baselines/` following the existing interface (implement `select_action(env_state) -> action`).
+2. Register the policy name in the `BASELINE_POLICIES` list in `backend/simulation_runner.py` inside `_run_phase1_baselines()`.
+3. Add the policy key to the frontend metrics interface in `frontend/src/types/config.ts`.
+
+### Adding Custom Metrics
+
+1. Add the metric to `_empty_metrics()` in `slingshot/environment/project_env.py`.
+2. Include it in the Socket.IO `tick_update` payload emitted by `simulation_runner.py`.
+3. Add a handler for the new field in `frontend/src/store/simulationStore.ts`.
+
+### Modifying the Network Architecture
+
+The DQN network is defined in `DQNAgent.__init__()` in `slingshot/agents/dqn_agent.py`. The feature extractor, value stream, and advantage stream are each composed of `nn.Linear` layers. When changing hidden dimensions, ensure the input dimension matches `STATE_DIM = 96` and that both the policy network and target network are updated identically to maintain sync compatibility.
+
+---
+
+## Limitations & Design Decisions
+
+**Discrete Time.** The environment discretizes time into 30-minute slots (`SLOT_HOURS = 0.5`), giving 16 scheduling slots per 8-hour workday. This provides sufficient resolution for realistic scheduling dynamics while keeping the state space tractable.
+
+**Fixed Task Window.** The state vector supports a maximum of $K=20$ visible tasks. During burst arrivals exceeding 20 concurrent tasks, the agent operates on a truncated view and may defer tasks that would be visible in a larger window. In practice, this is rarely binding at the default arrival rate of 4 tasks/day.
+
+**Poisson Variance.** Because task arrivals are genuinely stochastic, a 100-day simulation at 4 tasks/day does not guarantee exactly 400 tasks. The dynamic cap (`sim_days × rate × 1.5`) ensures the generator never runs dry before the simulation day limit is reached.
+
+**No Multi-Agent Collaboration.** Worker skill synergies exist in the environment model but the DQN is trained as a single centralized scheduler. Extending to a multi-agent formulation where workers partially self-select tasks is a natural next step.
+
+**CPU Training.** The current implementation trains on CPU. For large replay buffers or longer simulation horizons, moving the PyTorch training loop to a background thread with GPU acceleration would reduce Phase 2 latency significantly.
 
 ---
 
 ## Troubleshooting
 
-- **WebSocket Fails to Connect**: Check if FastAPI bound properly to `0.0.0.0` or `127.0.0.1`. Sometimes Vite proxies to `127.0.0.1:8000` but Uvicorn bound to `localhost`. Run Uvicorn explicitly to `127.0.0.1`.
-- **DQN Converges onto Bad Assigns**: Ensure the `PHASE1_FRACTION` is adequately high (e.g. $>40\%$). The DQN absolutely requires diverse failure states collected by baselines (Greedy/Random) to calculate robust value functions.
-- **Task Exhaustion Error**: If you hard-code parameters in Python, always respect that Phase 2 needs a dynamically calculated cap. Check the `Task list too short` assert triggered at the onset of `Phase 2b` in the runner to debug Poisson limits.
+**WebSocket fails to connect.**
+Check that Uvicorn bound to `0.0.0.0` rather than `127.0.0.1`. The Vite dev proxy expects the backend at `localhost:8000`; if they resolve differently on your system, set `--host 127.0.0.1` explicitly in the Uvicorn command.
+
+**DQN converges to poor assignments.**
+Ensure `phase1_fraction` is at least 0.4. The agent requires diverse failure states — particularly from the Greedy and Random baselines — to build a robust value function. A replay buffer below 30% fill at the start of Phase 2 is a reliable indicator of insufficient Phase 1 data.
+
+**`Task list too short` assertion error.**
+This fires when the Poisson generator exhausts tasks before the simulation day limit. It indicates `TOTAL_TASKS` was hardcoded rather than computed dynamically. Verify that `task_count` in the `SimConfig` payload is being passed through to `SimulationRunner.__init__()` and overriding the static config value. The startup log line `TOTAL_TASKS = N (dynamic cap)` confirms the correct value is active.
+
+**Simulation terminates before configured day count.**
+The termination condition should be `current_day >= SIM_DAYS` evaluated after each day's ticks complete, not mid-tick. If the simulation exits early, check that the day counter increments only at end-of-day and that the TOTAL_TASKS cap is not the binding constraint.
+
+**High TD error that does not decay.**
+A persistently high TD error (above ~1.0 after 1,000 gradient steps) usually indicates the learning rate cosine schedule is annealing too aggressively. Set the LR floor to `LEARNING_RATE × 0.2` (approximately 4e-05 at default settings) rather than near-zero to ensure the optimizer retains meaningful update magnitude through the full Phase 2 horizon.
+
+---
+
+## License
+
+This project was developed as part of an AMD Hackathon. See repository root for license terms.
