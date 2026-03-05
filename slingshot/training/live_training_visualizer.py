@@ -193,10 +193,10 @@ class LiveTrainingVisualizer:
         ax = self._ax_epsilon
         ax.clear()
         ax.plot(eps, self.epsilons, color='#56cc9d', linewidth=1.5)
-        ax.axhline(0.05, color='#ffcc66', linestyle=':', linewidth=1.0, alpha=0.8, label='ε floor (0.05)')
+        ax.axhline(0.05, color='#ffcc66', linestyle=':', linewidth=1.0, alpha=0.8, label='eps floor (0.05)')
         ax.legend(fontsize=7, facecolor='#1a1a2e', edgecolor='#555577', labelcolor='#e0e0e0')
         ax.set_ylim(0, 1.05)
-        self._style_ax(ax, 'Exploration Rate (ε)', 'Episode', 'Epsilon')
+        self._style_ax(ax, 'Exploration Rate (eps)', 'Episode', 'Epsilon')
 
         # ── Panel 3: Q-values ────────────────────────────────────────────────
         ax = self._ax_q
@@ -239,7 +239,7 @@ class LiveTrainingVisualizer:
         eps_now = self.epsilons[-1]
         ma_now = self.moving_avgs[-1]
         self._fig.suptitle(
-            f'DQN Training  |  Episode {ep_now}  |  ε={eps_now:.3f}  |  MA-50={ma_now:.1f}',
+            f'DQN Training  |  Episode {ep_now}  |  eps={eps_now:.3f}  |  MA-50={ma_now:.1f}',
             color='#ffffff', fontsize=12, fontweight='bold', y=0.98
         )
 

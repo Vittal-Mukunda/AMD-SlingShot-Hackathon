@@ -271,7 +271,7 @@ def train_dqn(
             print(f"Episode {episode+1:>5}/{max_episodes} | "
                   f"Return: {episode_reward:7.2f} | "
                   f"MA-50: {moving_avg:7.2f} | "
-                  f"ε: {agent.epsilon:.4f} | "
+                  f"eps: {agent.epsilon:.4f} | "
                   f"Q: {q_display:6.2f} | "
                   f"Tasks: {metrics['throughput']:2}/{config.NUM_TASKS} | "
                   f"Time: {elapsed:.0f}s")

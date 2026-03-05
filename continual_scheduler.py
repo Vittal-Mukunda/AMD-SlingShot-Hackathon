@@ -229,7 +229,7 @@ def run_phase2(env: ProjectEnv, agent: DQNAgent, args) -> List[Dict]:
 
     # Set Phase 2 starting epsilon
     agent.set_epsilon(config.EPSILON_PHASE2_START)
-    print(f"  Starting ε = {agent.epsilon:.3f}")
+    print(f"  Starting eps = {agent.epsilon:.3f}")
 
     # Continue from Phase 1 clock — do NOT reset env (seamless continuation)
     # The env's task list continues; new tasks still arriving per Poisson schedule
@@ -278,7 +278,7 @@ def run_phase2(env: ProjectEnv, agent: DQNAgent, args) -> List[Dict]:
                 break
             continue
 
-        # DQN online_step: select → execute → store → learn → decay ε
+        # DQN online_step: select → execute → store → learn → decay eps
         action, reward, next_state, done, loss, q_mean = agent.online_step(
             state, valid, env, train_every=1
         )
@@ -306,7 +306,7 @@ def run_phase2(env: ProjectEnv, agent: DQNAgent, args) -> List[Dict]:
         all_metrics.append(m)
 
     print(f"\n[Phase 2 complete] train_steps={agent.train_steps}, "
-          f"final_ε={agent.epsilon:.4f}, "
+          f"final_eps={agent.epsilon:.4f}, "
           f"best_throughput/day={best_throughput:.2f}")
 
     # Save final model
@@ -453,7 +453,7 @@ def main():
     print(f"    Lateness rate:   {overall['lateness_rate']:.2%}")
     print(f"    Quality score:   {overall['quality_score']:.3f}")
     print(f"    DQN train steps: {agent.train_steps}")
-    print(f"    Final ε:         {agent.epsilon:.4f}")
+    print(f"    Final eps:         {agent.epsilon:.4f}")
     print(f"\n  🟢 Done — results in: {config.RESULTS_DIR}")
 
 

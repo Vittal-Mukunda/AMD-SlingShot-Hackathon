@@ -317,7 +317,7 @@ class DQNAgent:
                     train_every: int = 1) -> Tuple[int, float, np.ndarray, bool, float, float]:
         """
         Full online learning step:
-          1. Select action (ε-greedy with masking)
+          1. Select action (eps-greedy with masking)
           2. Execute in env → get (next_state, reward, done)
           3. Store transition in PER buffer
           4. Train every `train_every` decisions if buffer is warm
@@ -339,7 +339,7 @@ class DQNAgent:
         loss, q_mean, td_err = 0.0, 0.0, 0.0
 
         if buf_size >= self.min_replay_size and (self.steps_done % train_every == 0):
-            # v10 Fix 3: Training taper — 4 grad steps while exploring, 2 after ε floor
+            # v10 Fix 3: Training taper — 4 grad steps while exploring, 2 after eps floor
             # Prevents overfitting on narrow replay data when greedy
             n_grad = 2 if self.epsilon <= self.epsilon_end + 0.01 else 4
             for _ in range(n_grad):
@@ -349,7 +349,7 @@ class DQNAgent:
             if self.debug_training and self.train_steps % 10 == 0:
                 print(f"    [DQN-TRAIN×{n_grad}] step={self.steps_done}, buf={buf_size}, "
                       f"loss={loss:.4f}, Q={q_mean:.3f}, "
-                      f"ε={self.epsilon:.4f}, train_steps={self.train_steps}")
+                      f"eps={self.epsilon:.4f}, train_steps={self.train_steps}")
         else:
             self.train_skipped += 1
             if self.debug_training and self.train_skipped <= 5:
@@ -446,9 +446,9 @@ class DQNAgent:
           expected_decisions = phase2_days × tasks_per_day
 
         Waypoints (fraction of Phase-2 expected decisions):
-          30% → ε = 0.3      (rapid initial exploration reduction)
-          60% → ε = 0.15     (agent mostly exploiting by mid-phase)
-          85% → ε = 0.05     (floor, near-greedy)
+          30% → eps = 0.3      (rapid initial exploration reduction)
+          60% → eps = 0.15     (agent mostly exploiting by mid-phase)
+          85% → eps = 0.05     (floor, near-greedy)
         """
         if phase2_days <= 0:
             phase2_days = max(1, int(sim_days * 0.40))  # default 40% Phase 2
@@ -514,7 +514,7 @@ class DQNAgent:
             'state_dim':    self.state_dim,
             'action_dim':   self.action_dim,
         }, path)
-        print(f"  [ckpt] Saved → {path}  (ε={self.epsilon:.4f}, "
+        print(f"  [ckpt] Saved → {path}  (eps={self.epsilon:.4f}, "
               f"steps={self.steps_done}, train={self.train_steps})")
 
     def load(self, path: str):
@@ -527,7 +527,7 @@ class DQNAgent:
         self.epsilon     = ckpt.get('epsilon',     self.epsilon)
         self.steps_done  = ckpt.get('steps_done',  0)
         self.train_steps = ckpt.get('train_steps', 0)
-        print(f"  [ckpt] Loaded ← {path}  (ε={self.epsilon:.4f}, "
+        print(f"  [ckpt] Loaded ← {path}  (eps={self.epsilon:.4f}, "
               f"steps={self.steps_done}, train={self.train_steps})")
 
 
@@ -541,7 +541,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     agent = DQNAgent()
-    print(f"✓ Init: device={agent.device}, ε={agent.epsilon:.2f}, "
+    print(f"✓ Init: device={agent.device}, eps={agent.epsilon:.2f}, "
           f"state_dim={agent.state_dim}")
 
     # Forward pass

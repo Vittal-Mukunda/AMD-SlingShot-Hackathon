@@ -139,7 +139,7 @@ Alpha=0.6, Beta anneals from 0.4 to 1.0 over training.
 - **Phase 1** ({phase1_days} working days): Baselines drive all assignments;
   DQN passively stores transitions (no gradient updates — buffer warm-up).
 - **Phase 2** ({phase2_days} working days): DQN takes full control with online
-  per-decision gradient updates starting at ε={eps_p2_start}.
+  per-decision gradient updates starting at eps={eps_p2_start}.
 
 ### Frontend
 4-module React dashboard: Config wizard → real-time Gantt + metrics → post-simulation analytics → README generator.

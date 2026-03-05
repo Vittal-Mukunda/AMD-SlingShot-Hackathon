@@ -740,7 +740,7 @@ class SimulationRunner:
                     self.agent.steps_done += 1
                     buf_size = len(self.agent.replay_buffer)
                     if buf_size >= self.agent.min_replay_size:
-                        # v10 Fix 3: tapered training — 4 grad steps while exploring, 2 at ε floor
+                        # v10 Fix 3: tapered training — 4 grad steps while exploring, 2 at eps floor
                         n_grad = 2 if self.agent.epsilon <= self.agent.epsilon_end + 0.01 else 4
                         for _ in range(n_grad):
                             self.agent.train_step()
