@@ -447,7 +447,7 @@ class DQNAgent:
 
         Waypoints (fraction of Phase-2 expected decisions):
           30% → eps = 0.3      (rapid initial exploration reduction)
-          60% → eps = 0.15     (agent mostly exploiting by mid-phase)
+          60% → eps = 0.15     (agent mostly exploiting by mid-phase)
           85% → eps = 0.05     (floor, near-greedy)
         """
         if phase2_days <= 0:
@@ -459,18 +459,18 @@ class DQNAgent:
         print(f"  [DQN-v9] Epsilon schedule: phase2_days={phase2_days}, "
               f"tasks_per_day={tasks_per_day}, "
               f"total_expected={self._total_decisions} decisions, "
-              f"\u03b5=0.3 at {int(self._total_decisions*0.30)}, "
-              f"\u03b5=0.15 at {int(self._total_decisions*0.60)}, "
-              f"\u03b5=0.05 at {int(self._total_decisions*0.85)}")
+              f"eps=0.3 at {int(self._total_decisions*0.30)}, "
+              f"eps=0.15 at {int(self._total_decisions*0.60)}, "
+              f"eps=0.05 at {int(self._total_decisions*0.85)}")
 
     def update_epsilon(self, step: Optional[int] = None, **kwargs):
         """v9: Piecewise exponential decay scoped to Phase-2 decisions.
 
         Waypoints (fraction of total Phase-2 expected decisions):
-          0%  → \u03b5 = epsilon_start (inherits from Phase 1, typically 0.4)
-          30% → \u03b5 = 0.3
-          60% → \u03b5 = 0.15
-          85% → \u03b5 = 0.05 (floor)
+          0%  → eps = epsilon_start (inherits from Phase 1, typically 0.4)
+          30% → eps = 0.3
+          60% → eps = 0.15
+          85% → eps = 0.05 (floor)
         """
         # Handle legacy 'episode' keyword if passed
         if step is None and 'episode' in kwargs:
