@@ -1,20 +1,10 @@
 /**
- * SimulationPage.tsx — Real-Time Simulation View (v2)
- *
- * Phase protocol:
- *   0          → Initializing (spinner)
- *   1          → Phase 1: All 5 baselines running live with Gantt + fatigue gauges
- *   'training' → Phase 2a: DQN training in background — spinner + progress bar
- *   3          → Phase 2b: DQN scheduling live Gantt
- *
- * Events:
- *   phase_transition { new_phase: 'training' } → show training screen
- *   phase2_ready                               → switch to phase 3 realtime view
- *   simulation_complete                        → navigate to /analytics after 2s
- *   simulation_error                           → show error banner
+ * SimulationPage.tsx — Live Operations Center (Redesigned)
+ * Premium dark ops aesthetic: glowing phase badge, live dot, cinematic training screen
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useShallow } from 'zustand/react/shallow';
 import { useSimulationStore } from '../store/simulationStore';
 import { formatElapsed, useHeadToHead } from '../hooks/useSimulation';
 import { useSocket } from '../hooks/useSocket';
@@ -27,144 +17,172 @@ import type { InjectedTask } from '../types/config';
 
 const BASELINE_NAMES = ['Greedy', 'Skill', 'FIFO', 'Hybrid', 'Random'];
 
-// ── Phase badge ───────────────────────────────────────────────────────────────
+// ── Phase badge with glow effect ─────────────────────────────────────────────
 function PhaseBadge({ phase }: { phase: 0 | 1 | 'training' | 3 }) {
     if (phase === 1) return (
-        <span className="badge badge-phase1 font-mono" style={{ fontSize: 11 }}>
+        <span className="badge badge-phase1" style={{ fontSize: 11 }}>
+            <span className="live-dot" />
             PHASE 1 — BASELINE ALLOCATION
         </span>
     );
     if (phase === 'training') return (
-        <span className="badge badge-phase2 font-mono" style={{ fontSize: 11 }}>
+        <span className="badge badge-amber" style={{ fontSize: 11 }}>
+            <span className="live-dot live-dot-amber" />
             DQN TRAINING
         </span>
     );
     if (phase === 3) return (
-        <span className="badge badge-phase2 font-mono" style={{ fontSize: 11 }}>
+        <span className="badge badge-amber" style={{ fontSize: 11 }}>
+            <span className="live-dot live-dot-amber" />
             PHASE 2 — DQN SCHEDULING
         </span>
     );
-    return <span className="badge badge-slate font-mono" style={{ fontSize: 11 }}>INITIALIZING</span>;
+    return <span className="badge badge-slate" style={{ fontSize: 11 }}>INITIALIZING</span>;
 }
 
-// ── DQN passive indicator (phase 1) ──────────────────────────────────────────
+// ── DQN observing indicator ───────────────────────────────────────────────────
 function DQNPassiveIndicator() {
     return (
         <div style={{
             display: 'flex', alignItems: 'center', gap: 8,
-            padding: '4px 10px', background: 'rgba(59,130,246,0.08)',
-            border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4,
+            padding: '4px 12px',
+            background: 'rgba(37,99,235,0.08)',
+            border: '1px solid rgba(37,99,235,0.25)',
+            borderRadius: 100,
         }}>
             <span style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: '#60A5FA', display: 'inline-block',
+                width: 6, height: 6, borderRadius: '50%',
+                background: 'var(--color-electric)',
+                boxShadow: '0 0 6px var(--color-electric)',
+                display: 'inline-block',
                 animation: 'pulse-amber 2s ease-in-out infinite',
             }} />
-            <span className="font-mono" style={{ fontSize: 10, color: '#60A5FA', letterSpacing: '0.07em' }}>
+            <span className="font-mono" style={{ fontSize: 10, color: '#60A5FA', letterSpacing: '0.08em' }}>
                 DQN OBSERVING
             </span>
         </div>
     );
 }
 
-// ── Training waiting screen ───────────────────────────────────────────────────
-function TrainingScreen({ percent, elapsed }: { percent: number; elapsed: number }) {
-    const ringStyle: React.CSSProperties = {
-        width: 120, height: 120, borderRadius: '50%',
-        border: '3px solid rgba(245,158,11,0.12)',
-        borderTopColor: '#F59E0B',
-        animation: 'spin 1.4s linear infinite',
-        position: 'absolute',
-    };
+// ── Training waiting screen — premium AI loading ──────────────────────────────
+function TrainingScreen({ percent }: { percent: number }) {
     return (
         <div style={{
             position: 'fixed', inset: 0, zIndex: 200,
-            background: 'rgba(13,15,18,0.97)',
+            background: '#0A0E1A',
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
-            gap: 32,
+            gap: 40,
+            animation: 'page-enter 0.5s ease forwards',
         }}>
-            {/* Spinner */}
-            <div style={{ position: 'relative', width: 120, height: 120 }}>
-                <div style={ringStyle} />
-                <div style={{
-                    ...ringStyle, width: 88, height: 88, top: 16, left: 16,
-                    borderTopColor: 'transparent',
-                    borderRightColor: 'rgba(245,158,11,0.4)',
-                    animationDuration: '2.2s',
-                    animationDirection: 'reverse',
-                }} />
-                <div style={{
-                    position: 'absolute', inset: 0,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                    <span style={{ fontSize: 28 }}>🧠</span>
-                </div>
-            </div>
+            {/* Ambient rotating glow */}
+            <div className="ambient-glow" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
 
-            {/* Message */}
-            <div style={{ textAlign: 'center', maxWidth: 480 }}>
+            {/* Card */}
+            <div style={{
+                position: 'relative', zIndex: 1,
+                background: 'var(--color-surface)',
+                border: '1px solid rgba(245,158,11,0.2)',
+                borderRadius: 20,
+                padding: '48px 56px',
+                textAlign: 'center',
+                maxWidth: 520,
+                boxShadow: '0 0 60px rgba(245,158,11,0.1), 0 32px 80px rgba(0,0,0,0.6)',
+            }}>
+                {/* Icon */}
+                <div style={{ fontSize: 48, marginBottom: 24 }}>🧠</div>
+
+                {/* Label */}
                 <div className="font-mono" style={{
-                    fontSize: 10, color: 'var(--color-amber)',
-                    letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 14,
+                    fontSize: 'var(--text-label)', color: 'var(--color-amber)',
+                    letterSpacing: '0.20em', textTransform: 'uppercase', marginBottom: 16,
                 }}>
                     PHASE 2 — DQN TRAINING
                 </div>
-                <h2 className="font-display" style={{
-                    fontSize: '1.45rem', fontWeight: 700, color: 'var(--color-text)',
-                    marginBottom: 12, lineHeight: 1.4,
+
+                {/* Headline with typing cursor */}
+                <h2 className="typing-cursor" style={{
+                    fontFamily: 'var(--font-ui)', fontSize: 22, fontWeight: 700,
+                    color: 'var(--color-text)', lineHeight: 1.4, marginBottom: 12,
                 }}>
-                    DQN Agent is learning scheduling patterns
+                    DQN Agent Analyzing Patterns
                 </h2>
+
+                {/* Status message */}
                 <p style={{
-                    color: 'var(--color-slate-text)', fontSize: '0.88rem',
-                    lineHeight: 1.7, marginBottom: 24,
+                    color: 'var(--color-slate-text)', fontSize: 'var(--text-body)',
+                    lineHeight: 1.7, marginBottom: 32,
                 }}>
-                    Replaying {percent < 100 ? 'workforce transitions' : 'complete!'} from Phase 1 baselines
-                    and computing Bellman updates. Agent takes control once training completes.
+                    {percent < 100
+                        ? 'Replaying workforce transitions and computing Bellman updates…'
+                        : 'Training complete — transitioning to live scheduling.'}
                 </p>
 
-                {/* Progress bar */}
+                {/* Amber progress bar — no raw percentage label */}
                 <div style={{
-                    width: 340, height: 6, background: 'rgba(245,158,11,0.12)',
-                    borderRadius: 3, overflow: 'hidden', margin: '0 auto 16px',
+                    width: '100%', height: 4,
+                    background: 'rgba(245,158,11,0.12)',
+                    borderRadius: 2, overflow: 'hidden', marginBottom: 16,
                 }}>
                     <div style={{
-                        height: '100%', width: `${percent}%`,
-                        background: 'var(--color-amber)',
-                        borderRadius: 3,
-                        transition: 'width 0.4s ease',
+                        height: '100%',
+                        width: `${percent}%`,
+                        background: 'linear-gradient(90deg, var(--color-amber), #FBBF24)',
+                        borderRadius: 2,
+                        transition: 'width 0.6s ease',
+                        boxShadow: '0 0 12px rgba(245,158,11,0.5)',
                     }} />
                 </div>
-                <div className="font-mono" style={{ fontSize: 13, color: 'var(--color-amber)', marginBottom: 8 }}>
-                    {percent}%
-                </div>
-                <div className="font-mono" style={{ fontSize: 10, color: 'var(--color-slate-dim)' }}>
-                    Elapsed: {formatElapsed(elapsed)}
+
+                {/* Subtle status text */}
+                <div className="font-mono" style={{
+                    fontSize: 'var(--text-label)', color: 'var(--color-slate-dim)',
+                    letterSpacing: '0.06em',
+                }}>
+                    {percent < 100 ? 'Agent learning from Phase 1 observations' : 'Preparing live scheduler…'}
                 </div>
             </div>
 
+            {/* Footer note */}
             <div className="font-mono" style={{
-                fontSize: 10, color: 'var(--color-slate-dim)',
+                position: 'relative', zIndex: 1,
+                fontSize: 'var(--text-label)', color: 'var(--color-slate-dim)',
                 letterSpacing: '0.1em', textTransform: 'uppercase',
             }}>
-                Phase 1 complete — All 5 baseline policies benchmarked
+                Phase 1 complete — All baseline policies benchmarked
             </div>
         </div>
     );
 }
 
 // ── Error banner ──────────────────────────────────────────────────────────────
-function ErrorBanner({ message }: { message: string }) {
+function ErrorBanner({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
     return (
         <div style={{
             position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-            zIndex: 300, background: '#EF4444', color: '#fff',
-            padding: '12px 24px', borderRadius: 6,
-            fontFamily: 'var(--font-mono)', fontSize: 12, maxWidth: 600,
-            boxShadow: '0 4px 24px rgba(239,68,68,0.4)',
+            zIndex: 300,
+            background: 'rgba(239,68,68,0.12)',
+            border: '1px solid rgba(239,68,68,0.4)',
+            color: 'var(--color-danger)',
+            padding: '14px 24px',
+            borderRadius: 'var(--radius-lg)',
+            fontFamily: 'var(--font-mono)', fontSize: 12, maxWidth: 640,
+            boxShadow: '0 8px 40px rgba(239,68,68,0.3)',
+            display: 'flex', alignItems: 'center', gap: 16,
+            backdropFilter: 'blur(8px)',
         }}>
-            ⚠ Simulation Error: {message}
+            <span>⚠ Simulation Error: {message}</span>
+            {onDismiss && (
+                <button onClick={onDismiss} style={{
+                    background: 'rgba(239,68,68,0.15)',
+                    border: '1px solid rgba(239,68,68,0.4)',
+                    color: 'var(--color-danger)', borderRadius: 'var(--radius-md)',
+                    padding: '4px 12px', cursor: 'pointer',
+                    fontFamily: 'var(--font-mono)', fontSize: 11, flexShrink: 0,
+                }}>
+                    ← Return to Config
+                </button>
+            )}
         </div>
     );
 }
@@ -179,33 +197,22 @@ export default function SimulationPage() {
         workerStates, queueState, ganttBlocks, finalMetrics,
         isPaused, selectedBaseline, setSelectedBaseline, simConfig,
         trainingPercent, simulationError, activePolicy,
-    } = useSimulationStore();
-
-    // Training screen elapsed timer
-    const [trainingElapsed, setTrainingElapsed] = useState(0);
-    const trainingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    } = useSimulationStore(
+        useShallow(s => ({
+            phase: s.phase, currentTick: s.currentTick,
+            currentDay: s.currentDay, elapsedSeconds: s.elapsedSeconds,
+            workerStates: s.workerStates, queueState: s.queueState,
+            ganttBlocks: s.ganttBlocks, finalMetrics: s.finalMetrics,
+            isPaused: s.isPaused, selectedBaseline: s.selectedBaseline,
+            setSelectedBaseline: s.setSelectedBaseline, simConfig: s.simConfig,
+            trainingPercent: s.trainingPercent, simulationError: s.simulationError,
+            activePolicy: s.activePolicy,
+        }))
+    );
 
     const [showInjectPanel, setShowInjectPanel] = useState(false);
     const [injectedTasks, setInjectedTasks] = useState<InjectedTask[]>([]);
 
-    // Start/stop training timer based on phase
-    useEffect(() => {
-        if (phase === 'training') {
-            setTrainingElapsed(0);
-            trainingTimerRef.current = setInterval(() =>
-                setTrainingElapsed(v => v + 1), 1000);
-        } else {
-            if (trainingTimerRef.current) {
-                clearInterval(trainingTimerRef.current);
-                trainingTimerRef.current = null;
-            }
-        }
-        return () => {
-            if (trainingTimerRef.current) clearInterval(trainingTimerRef.current);
-        };
-    }, [phase]);
-
-    // Navigate to analytics when simulation completes (Bug 6: 3.5s delay so user sees final Phase 2 view)
     useEffect(() => {
         if (finalMetrics) {
             const t = setTimeout(() => navigate('/analytics'), 3500);
@@ -217,176 +224,177 @@ export default function SimulationPage() {
 
     const handleInjectTask = (task: InjectedTask) => {
         injectTask({
-            task_id: task.task_id,
-            duration: task.duration,
-            urgency: task.urgency,
-            required_skill: task.required_skill,
+            task_id: task.task_id, duration: task.duration,
+            urgency: task.urgency, required_skill: task.required_skill,
             arrival_tick: task.arrival_tick,
         });
     };
 
-    // Gantt data: Phase 1 → selected baseline tab; Phase 3 → DQN
     const currentGanttBlocks =
-        phase === 3
-            ? (ganttBlocks['DQN'] ?? [])
-            : (ganttBlocks[selectedBaseline] ?? []);
+        phase === 3 ? (ganttBlocks['DQN'] ?? []) : (ganttBlocks[selectedBaseline] ?? []);
 
-    // Which tab to highlight as "live" during Phase 1
     const isActiveBaseline = (name: string) =>
         phase === 1 && activePolicy.includes(name);
 
     return (
-        <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)' }}>
+        <div className="page-enter" style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg)' }}>
 
-            {/* ── Training waiting screen (blocks the whole UI) ── */}
-            {phase === 'training' && (
-                <TrainingScreen percent={trainingPercent} elapsed={trainingElapsed} />
-            )}
+            {/* ── Training waiting screen ── */}
+            {phase === 'training' && <TrainingScreen percent={trainingPercent} />}
 
             {/* ── Error banner ── */}
-            {simulationError && <ErrorBanner message={simulationError} />}
+            {simulationError && (
+                <ErrorBanner message={simulationError} onDismiss={() => {
+                    useSimulationStore.getState().reset();
+                    navigate('/');
+                }} />
+            )}
 
             {/* ── TOP NAVBAR ── */}
             <nav style={{
                 height: 56, flexShrink: 0,
-                background: 'var(--color-panel)',
+                background: 'var(--color-surface)',
                 borderBottom: '1px solid var(--color-border)',
                 display: 'flex', alignItems: 'center',
-                padding: '0 1.5rem', gap: '1.2rem',
+                padding: '0 20px', gap: 16,
+                boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
             }}>
+                {/* Logo */}
                 <span className="font-mono" style={{
-                    color: 'var(--color-amber)', fontWeight: 700,
+                    color: 'var(--color-electric)', fontWeight: 700,
                     fontSize: 13, letterSpacing: '0.1em', flexShrink: 0,
                 }}>
                     DQN SCHEDULER
                 </span>
-                <div style={{ width: 1, height: 28, background: 'var(--color-border)', flexShrink: 0 }} />
+                <div style={{ width: 1, height: 24, background: 'var(--color-border-bright)', flexShrink: 0 }} />
 
+                {/* Phase badge */}
                 <PhaseBadge phase={phase} />
 
-                {/* Tick / day */}
-                <div className="num font-mono" style={{ color: 'var(--color-text)', fontSize: 13 }}>
-                    <span style={{ color: 'var(--color-slate-text)' }}>TICK</span>
-                    <span style={{ color: 'var(--color-amber)', marginLeft: 6, marginRight: 16 }}>
-                        {currentTick.toLocaleString()}
-                    </span>
-                    <span style={{ color: 'var(--color-slate-text)' }}>DAY</span>
-                    <span style={{ color: 'var(--color-text)', marginLeft: 6 }}>{currentDay}</span>
+                {/* Day / Tick counters */}
+                <div className="num font-mono" style={{ color: 'var(--color-text-dim)', fontSize: 13 }}>
+                    <span style={{ color: 'var(--color-slate-dim)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>DAY </span>
+                    <span style={{ color: 'var(--color-text)', fontWeight: 700, marginRight: 16 }}>{currentDay}</span>
+                    <span style={{ color: 'var(--color-slate-dim)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>TICK </span>
+                    <span style={{ color: 'var(--color-cyan)', fontWeight: 700 }}>{currentTick.toLocaleString()}</span>
                 </div>
 
                 {phase === 1 && <DQNPassiveIndicator />}
 
                 <div style={{ flex: 1 }} />
 
-                {/* Active policy label */}
+                {/* Active policy */}
                 {(phase === 1 || phase === 3) && (
                     <div className="font-mono" style={{
                         fontSize: 11, color: 'var(--color-slate-text)',
                         background: 'rgba(255,255,255,0.04)',
-                        padding: '3px 8px', borderRadius: 3,
+                        border: '1px solid var(--color-border)',
+                        padding: '3px 10px', borderRadius: 100,
                     }}>
                         {activePolicy}
                     </div>
                 )}
 
                 {/* Elapsed */}
-                <div className="num font-mono" style={{ color: 'var(--color-slate-text)', fontSize: 13 }}>
+                <div className="num font-mono" style={{ color: 'var(--color-slate-dim)', fontSize: 12 }}>
                     ⏱ {formatElapsed(elapsedSeconds)}
                 </div>
 
                 {/* Inject task */}
-                <button className="btn-ghost" style={{ fontSize: 11 }}
+                <button className="btn-ghost" style={{ fontSize: 11, padding: '5px 12px' }}
                     onClick={() => setShowInjectPanel(p => !p)}>
                     + Inject Task
                 </button>
 
-                {/* Pause / Resume */}
+                {/* Pause/Resume */}
                 <button
-                    className={isPaused ? 'btn-primary' : 'btn-ghost'}
-                    style={{ fontSize: 11, minWidth: 80 }}
+                    style={{
+                        fontSize: 11, padding: '5px 14px',
+                        background: isPaused ? 'var(--color-electric)' : 'transparent',
+                        color: isPaused ? '#fff' : 'var(--color-slate-text)',
+                        border: `1px solid ${isPaused ? 'var(--color-electric)' : 'var(--color-border-bright)'}`,
+                        borderRadius: 'var(--radius-md)', cursor: 'pointer',
+                        fontFamily: 'var(--font-ui)', fontWeight: 500,
+                        transition: 'all 0.15s ease', minWidth: 80,
+                        boxShadow: isPaused ? '0 0 12px rgba(37,99,235,0.4)' : 'none',
+                    }}
                     onClick={() => isPaused ? resumeSimulation() : pauseSimulation()}
                 >
                     {isPaused ? '▶ Resume' : '⏸ Pause'}
                 </button>
 
-                {/* Analytics link when done */}
+                {/* Analytics link */}
                 {finalMetrics && (
-                    <button className="btn-primary" style={{ fontSize: 11 }}
+                    <button className="btn-amber" style={{ fontSize: 11, padding: '5px 14px' }}
                         onClick={() => navigate('/analytics')}>
                         Analytics →
                     </button>
                 )}
             </nav>
 
-            {/* ── INJECT PANEL ── */}
+            {/* ── Inject Panel ── */}
             {showInjectPanel && (
                 <div style={{
-                    background: 'var(--color-panel)',
+                    background: 'var(--color-surface)',
                     borderBottom: '1px solid var(--color-border)',
-                    padding: '1rem 1.5rem',
+                    padding: '16px 20px',
                 }}>
                     <PriorityInjectionPanel
                         pendingTasks={injectedTasks}
-                        onAdd={(t) => setInjectedTasks(p => [...p, t])}
-                        onRemove={(id) => setInjectedTasks(p => p.filter(t => t.task_id !== id))}
+                        onAdd={t => setInjectedTasks(p => [...p, t])}
+                        onRemove={id => setInjectedTasks(p => p.filter(t => t.task_id !== id))}
                         onEmit={handleInjectTask}
                         currentTick={currentTick}
                     />
                 </div>
             )}
 
-            {/* ── BODY ── */}
+            {/* ── Body ── */}
             <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-                {/* ── LEFT SIDEBAR: Workers ── */}
-                <WorkerSidebar
-                    workers={workerStates}
-                    simConfig={simConfig}
-                    currentTick={currentTick}
-                />
+                {/* ── Left sidebar: Workers ── */}
+                <WorkerSidebar workers={workerStates} simConfig={simConfig} currentTick={currentTick} />
 
-                {/* ── MAIN: Gantt + Queue ── */}
+                {/* ── Main: Gantt + Queue ── */}
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-                    {/* Phase 1: 5 baseline tabs */}
+                    {/* Phase 1: Baseline tabs */}
                     {phase === 1 && (
                         <div style={{
                             display: 'flex', gap: 0,
-                            background: 'var(--color-panel)',
+                            background: 'var(--color-surface)',
                             borderBottom: '1px solid var(--color-border)',
-                            padding: '0 1rem', flexShrink: 0,
+                            padding: '0 16px', flexShrink: 0,
                         }}>
                             {BASELINE_NAMES.map(name => {
                                 const hasData = (ganttBlocks[name]?.length ?? 0) > 0;
                                 const isActive = isActiveBaseline(name);
+                                const isSelected = selectedBaseline === name;
                                 return (
-                                    <button key={name}
-                                        onClick={() => setSelectedBaseline(name)}
-                                        style={{
-                                            padding: '8px 16px', background: 'none', border: 'none',
-                                            borderBottom: `2px solid ${selectedBaseline === name
-                                                ? 'var(--color-amber)' : 'transparent'}`,
-                                            color: selectedBaseline === name
-                                                ? 'var(--color-amber)'
-                                                : hasData ? 'var(--color-text)' : 'var(--color-slate-dim)',
-                                            fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
-                                            letterSpacing: '0.08em', textTransform: 'uppercase',
-                                            cursor: 'pointer',
-                                            transition: 'all 0.15s ease',
-                                            display: 'flex', alignItems: 'center', gap: 6,
-                                        }}>
+                                    <button key={name} onClick={() => setSelectedBaseline(name)} style={{
+                                        padding: '10px 18px',
+                                        background: 'none', border: 'none',
+                                        borderBottom: `2px solid ${isSelected ? 'var(--color-electric)' : 'transparent'}`,
+                                        color: isSelected ? 'var(--color-electric)' : hasData ? 'var(--color-text-dim)' : 'var(--color-slate-dim)',
+                                        fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
+                                        letterSpacing: '0.08em', textTransform: 'uppercase',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.15s ease',
+                                        display: 'flex', alignItems: 'center', gap: 6,
+                                    }}>
                                         {name}
                                         {isActive && (
                                             <span style={{
-                                                width: 6, height: 6, borderRadius: '50%',
-                                                background: 'var(--color-amber)',
+                                                width: 5, height: 5, borderRadius: '50%',
+                                                background: 'var(--color-electric)',
+                                                boxShadow: '0 0 6px var(--color-electric)',
                                                 animation: 'pulse-amber 1.2s ease-in-out infinite',
                                                 display: 'inline-block',
                                             }} />
                                         )}
                                         {!isActive && hasData && (
                                             <span style={{
-                                                width: 6, height: 6, borderRadius: '50%',
+                                                width: 5, height: 5, borderRadius: '50%',
                                                 background: 'var(--color-success)',
                                                 display: 'inline-block',
                                             }} />
@@ -400,17 +408,12 @@ export default function SimulationPage() {
                     {/* Phase 3: DQN header bar */}
                     {phase === 3 && (
                         <div style={{
-                            padding: '6px 1rem',
-                            background: 'rgba(245,158,11,0.06)',
-                            borderBottom: '1px solid rgba(245,158,11,0.2)',
-                            flexShrink: 0,
-                            display: 'flex', alignItems: 'center', gap: 12,
+                            padding: '7px 16px',
+                            background: 'rgba(245,158,11,0.04)',
+                            borderBottom: '1px solid rgba(245,158,11,0.15)',
+                            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10,
                         }}>
-                            <span style={{
-                                width: 8, height: 8, borderRadius: '50%',
-                                background: 'var(--color-amber)', display: 'inline-block',
-                                animation: 'pulse-amber 1.5s ease-in-out infinite',
-                            }} />
+                            <span className="live-dot live-dot-amber" />
                             <span className="font-mono" style={{
                                 fontSize: 11, color: 'var(--color-amber)', letterSpacing: '0.08em',
                             }}>
@@ -419,56 +422,59 @@ export default function SimulationPage() {
                         </div>
                     )}
 
-                    {/* Phase 0: Initializing */}
+                    {/* Phase 0: Initializing spinner */}
                     {phase === 0 && (
-                        <div style={{
-                            flex: 1, display: 'flex', alignItems: 'center',
-                            justifyContent: 'center',
-                        }}>
+                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             <div style={{ textAlign: 'center' }}>
+                                <div style={{
+                                    width: 48, height: 48, borderRadius: '50%',
+                                    border: '3px solid rgba(37,99,235,0.12)',
+                                    borderTopColor: 'var(--color-electric)',
+                                    animation: 'spin 1s linear infinite',
+                                    margin: '0 auto 16px',
+                                    boxShadow: '0 0 20px rgba(37,99,235,0.3)',
+                                }} />
                                 <div className="font-mono" style={{
-                                    fontSize: 12, color: 'var(--color-amber)',
-                                    letterSpacing: '0.15em', marginBottom: 16,
+                                    fontSize: 12, color: 'var(--color-electric)',
+                                    letterSpacing: '0.15em', textTransform: 'uppercase',
                                 }}>
                                     CONNECTING TO BACKEND…
                                 </div>
-                                <div style={{
-                                    width: 40, height: 40, borderRadius: '50%',
-                                    border: '3px solid rgba(245,158,11,0.15)',
-                                    borderTopColor: '#F59E0B',
-                                    animation: 'spin 1s linear infinite',
-                                    margin: '0 auto',
-                                }} />
                             </div>
                         </div>
                     )}
 
-                    {/* Gantt chart (shown in phase 1 and 3) */}
+                    {/* Gantt chart */}
                     {(phase === 1 || phase === 3) && (
-                        <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+                        <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minHeight: 0 }}>
                             <GanttChart
                                 blocks={currentGanttBlocks}
                                 workers={workerStates}
                                 currentTick={currentTick}
                                 phase={phase === 3 ? 2 : 1}
                                 slotsPerDay={16}
+                                numWorkers={simConfig.num_workers}
+                                totalDays={simConfig.days_phase1 + simConfig.days_phase2}
                             />
                         </div>
                     )}
 
-                    {/* Task queue (shown in phase 1 and 3) */}
+                    {/* Task queue */}
                     {(phase === 1 || phase === 3) && (
-                        <div style={{ flexShrink: 0, height: 180, borderTop: '1px solid var(--color-border)' }}>
+                        <div style={{
+                            flexShrink: 0, height: 180,
+                            borderTop: '1px solid var(--color-border)',
+                        }}>
                             <TaskQueue queue={queueState} currentTick={currentTick} />
                         </div>
                     )}
                 </div>
 
-                {/* ── RIGHT PANEL: ComparisonStrip ── */}
+                {/* ── Right panel: ComparisonStrip ── */}
                 <div style={{
-                    width: 320, flexShrink: 0,
+                    width: 300, flexShrink: 0,
                     borderLeft: '1px solid var(--color-border)',
-                    background: 'var(--color-panel)', overflow: 'auto',
+                    background: 'var(--color-surface)', overflow: 'auto',
                 }}>
                     <ComparisonStrip
                         phase={phase === 3 ? 2 : phase === 1 ? 1 : 0}

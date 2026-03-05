@@ -234,14 +234,14 @@ def generate_poisson_arrivals(
     """
     Generate tasks with Poisson-distributed arrival times across the simulation.
 
-    Tasks arrive according to a Poisson process so NO agent has lookahead:
-      - Each task's arrival_tick is drawn from a non-homogeneous Poisson process.
-      - Tasks within the same slot are ordered by task_id to break ties.
+    v8 FIX: Tasks are generated at a TRUE per-day rate, not spread uniformly.
+    total_tasks is now an UPPER CAP — actual count = sim_days × arrival_rate.
+    This decouples throughput from simulation length.
 
     Args:
-        total_tasks          : Number of tasks (default config.TOTAL_TASKS)
+        total_tasks          : Upper cap on tasks (default config.TOTAL_TASKS)
         arrival_rate_per_day : Mean arrivals per day (default config.TASK_ARRIVAL_RATE)
-        total_slots          : Total simulation slots (default PHASE1+PHASE2 days × SLOTS_PER_DAY)
+        total_slots          : Total simulation slots
         seed                 : Random seed
 
     Returns:
@@ -252,30 +252,43 @@ def generate_poisson_arrivals(
     else:
         rng = np.random.default_rng()
 
-    total_tasks          = total_tasks or config.TOTAL_TASKS
+    task_cap             = total_tasks or config.TOTAL_TASKS
     arrival_rate_per_day = arrival_rate_per_day or config.TASK_ARRIVAL_RATE
     total_slots          = total_slots or (config.TOTAL_SIM_DAYS * config.SLOTS_PER_DAY)
+
+    # v10 FIX: Use task_cap directly as the maximum generation target.
+    # Generate 2× intervals to handle Poisson variance — many will land past
+    # the simulation horizon and get dropped (line 288 break), so we need
+    # headroom in the generation buffer.
+    generation_buffer = max(10, task_cap * 2)
 
     # Rate per slot = tasks_per_day / slots_per_day
     rate_per_slot = arrival_rate_per_day / config.SLOTS_PER_DAY
 
-    # Spread arrivals across working slots only (within each day's working window)
-    # Convert slot index to (day, slot_in_day) and filter to working hours
+    # Build list of working slots
     working_slots = []
     for s in range(total_slots):
         slot_in_day = s % config.SLOTS_PER_DAY
         if config.WORK_START_SLOT <= slot_in_day <= config.WORK_END_SLOT:
             working_slots.append(s)
 
-    # Assign each task an arrival tick via Poisson inter-arrival in working slots
-    intervals  = rng.exponential(scale=1.0 / rate_per_slot, size=total_tasks)
-    cum_slots  = np.cumsum(intervals)
-    # Scale to fit within available working slots (cap at last working slot)
-    max_working = working_slots[-1] if working_slots else total_slots - 1
-    cum_slots  = np.clip(cum_slots / cum_slots.max() * max_working * 0.9, 0, max_working)
+    if not working_slots:
+        working_slots = list(range(total_slots))
+
+    # TRUE Poisson inter-arrival times with 2× headroom
+    intervals = rng.exponential(scale=1.0 / rate_per_slot, size=generation_buffer)
+    cum_slots = np.cumsum(intervals)
+
+    # Cap at last working slot (tasks arriving after sim ends are dropped)
+    max_working = working_slots[-1]
 
     tasks = []
-    for tid in range(total_tasks):
+    for tid in range(generation_buffer):
+        if cum_slots[tid] > max_working:
+            break  # task would arrive after simulation ends
+        if len(tasks) >= task_cap:
+            break  # reached the requested cap
+
         # Snap to nearest working slot
         ideal_slot   = cum_slots[tid]
         arrival_tick = min(working_slots, key=lambda s: abs(s - ideal_slot))
@@ -284,14 +297,24 @@ def generate_poisson_arrivals(
         complexity = int(rng.choice(config.TASK_COMPLEXITY_LEVELS))
         task_type  = int(rng.choice(config.TASK_TYPES)) if hasattr(config, 'TASK_TYPES') else 0
 
-        # Deadline: scales with complexity and priority (more complex → more time)
-        base_deadline_h  = config.DEADLINE_MIN_H + (complexity - 1) * 3.0
+        # ── Deadline: realistic operational window from arrival ──────────────
+        work_hours_per_day = config.SLOTS_PER_DAY * config.SLOT_HOURS  # e.g. 8h
+        min_deadline_h = config.DEADLINE_MIN_DAYS * work_hours_per_day  # e.g. 4h
+        max_deadline_h = config.DEADLINE_MAX_DAYS * work_hours_per_day  # e.g. 40h
+
+        # Scale with complexity: more complex task → more time allowed
+        complexity_scale = 1.0 + (complexity - 1) * 0.4   # 1.0 … 2.6
+        task_min_h = min_deadline_h * complexity_scale
+        task_max_h = max_deadline_h * complexity_scale
         # High-priority tasks get somewhat tighter deadlines
-        priority_factor  = 1.0 - 0.05 * priority
-        deadline_h       = float(rng.uniform(
-            base_deadline_h * priority_factor,
-            min(config.DEADLINE_MAX_H, base_deadline_h * 2.5)
-        ))
+        priority_tightening = 1.0 - 0.08 * priority   # 1.0 … 0.76
+        task_max_h = task_max_h * priority_tightening
+        # Ensure min < max and both are sane
+        task_min_h = max(task_min_h, min_deadline_h)
+        task_max_h = max(task_max_h, task_min_h + work_hours_per_day)
+        # Enforce overall cap at DEADLINE_MAX_DAYS
+        task_max_h = min(task_max_h, max_deadline_h)
+        deadline_h = float(rng.uniform(task_min_h, task_max_h))
 
         task = Task(
             task_id      = tid,

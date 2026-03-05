@@ -5,7 +5,8 @@
  *
  * NO RL training internals exposed (no loss, Q-values, epsilon, replay buffer, etc.)
  */
-import React from 'react';
+import React, { useMemo } from 'react';
+
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
     LineChart, Line, ResponsiveContainer, Cell
@@ -49,26 +50,27 @@ function MetricRow({ label, value, color, unit = '' }: {
 }
 
 export default function ComparisonStrip({ phase, hhMetrics, workerCount }: Props) {
-    // Throughput bar data
-    const throughputData = [
+    // ── Memoized chart data (⚠ prevents Recharts infinite animation loop)
+    const throughputData = useMemo(() => [
         { name: 'DQN', value: hhMetrics.dqn_throughput },
         ...Object.entries(hhMetrics.baseline_throughputs).map(([name, value]) => ({ name, value }))
-    ];
+    ], [hhMetrics.dqn_throughput, hhMetrics.baseline_throughputs]);
 
-    // Lateness rate data
-    const latenessData = [
+    const latenessData = useMemo(() => [
         { name: 'DQN', value: hhMetrics.dqn_lateness_rate },
         ...Object.entries(hhMetrics.baseline_lateness_rates).map(([name, value]) => ({ name, value }))
-    ];
+    ], [hhMetrics.dqn_lateness_rate, hhMetrics.baseline_lateness_rates]);
 
-    // Queue depth sparkline
-    const sparkData = hhMetrics.queue_depth_history.map((v, i) => ({ i, v }));
+    const sparkData = useMemo(() =>
+        hhMetrics.queue_depth_history.map((v, i) => ({ i, v }))
+        , [hhMetrics.queue_depth_history]);
 
-    // Worker fatigue mini-bars
-    const fatigueData = hhMetrics.dqn_worker_fatigue.map((f, i) => ({
-        name: `W${i + 1}`, value: f,
-        color: f >= 2.6 ? '#EF4444' : f >= 2 ? '#F97316' : f >= 1 ? '#F59E0B' : '#22C55E'
-    }));
+    const fatigueData = useMemo(() =>
+        hhMetrics.dqn_worker_fatigue.map((f, i) => ({
+            name: `W${i + 1}`, value: f,
+            color: f >= 2.6 ? '#EF4444' : f >= 2 ? '#F97316' : f >= 1 ? '#F59E0B' : '#22C55E'
+        }))
+        , [hhMetrics.dqn_worker_fatigue]);
 
     const panelPad: React.CSSProperties = { padding: '12px', borderBottom: '1px solid var(--color-border)' };
 

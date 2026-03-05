@@ -274,6 +274,10 @@ class DQNAgent:
         self.last_td_error = 0.0
         self.debug_training = False  # Set True for verbose per-step training logs
 
+        # v7 Fix 4: time-aware epsilon schedule
+        self._total_decisions = 5000  # default, reconfigured by runner
+        self._decision_count = 0
+
     # ── Action selection ──────────────────────────────────────────────────────
 
     def select_action(self, state: np.ndarray, valid_actions: List[int],
@@ -335,10 +339,15 @@ class DQNAgent:
         loss, q_mean, td_err = 0.0, 0.0, 0.0
 
         if buf_size >= self.min_replay_size and (self.steps_done % train_every == 0):
-            # === TRAINING TRIGGER ===
-            loss, q_mean, td_err = self.train_step()
+            # v10 Fix 3: Training taper — 4 grad steps while exploring, 2 after ε floor
+            # Prevents overfitting on narrow replay data when greedy
+            n_grad = 2 if self.epsilon <= self.epsilon_end + 0.01 else 4
+            for _ in range(n_grad):
+                _loss, _qm, _td = self.train_step()
+                if _loss != 0.0:
+                    loss, q_mean, td_err = _loss, _qm, _td
             if self.debug_training and self.train_steps % 10 == 0:
-                print(f"    [DQN-TRAIN] step={self.steps_done}, buf={buf_size}, "
+                print(f"    [DQN-TRAIN×{n_grad}] step={self.steps_done}, buf={buf_size}, "
                       f"loss={loss:.4f}, Q={q_mean:.3f}, "
                       f"ε={self.epsilon:.4f}, train_steps={self.train_steps}")
         else:
@@ -397,7 +406,7 @@ class DQNAgent:
         # Gradient step
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10.0)
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
 
         # NaN gradient guard
         if any(p.grad is not None and torch.isnan(p.grad).any()
@@ -426,13 +435,64 @@ class DQNAgent:
 
     # ── Epsilon decay (called per DECISION in online mode) ────────────────────
 
+    def configure_epsilon_schedule(self, total_expected_decisions: int = 0,
+                                    tasks_per_day: float = 4.0,
+                                    num_workers: int = 5,
+                                    sim_days: int = 25,
+                                    phase2_days: int = 0):
+        """v9: Phase-2-only epsilon schedule.
+
+        Decision estimate is scoped to PHASE 2 decisions only:
+          expected_decisions = phase2_days × tasks_per_day
+
+        Waypoints (fraction of Phase-2 expected decisions):
+          30% → ε = 0.3      (rapid initial exploration reduction)
+          60% → ε = 0.15     (agent mostly exploiting by mid-phase)
+          85% → ε = 0.05     (floor, near-greedy)
+        """
+        if phase2_days <= 0:
+            phase2_days = max(1, int(sim_days * 0.40))  # default 40% Phase 2
+        # Pure Phase 2 decision estimate: one decision per arriving task per day
+        estimated = int(phase2_days * tasks_per_day)
+        self._total_decisions = max(estimated, 50)  # floor prevents div-by-zero
+        self._decision_count  = 0
+        print(f"  [DQN-v9] Epsilon schedule: phase2_days={phase2_days}, "
+              f"tasks_per_day={tasks_per_day}, "
+              f"total_expected={self._total_decisions} decisions, "
+              f"\u03b5=0.3 at {int(self._total_decisions*0.30)}, "
+              f"\u03b5=0.15 at {int(self._total_decisions*0.60)}, "
+              f"\u03b5=0.05 at {int(self._total_decisions*0.85)}")
+
     def update_epsilon(self, step: Optional[int] = None, **kwargs):
-        """Exponential decay; also steps the cosine LR scheduler."""
+        """v9: Piecewise exponential decay scoped to Phase-2 decisions.
+
+        Waypoints (fraction of total Phase-2 expected decisions):
+          0%  → \u03b5 = epsilon_start (inherits from Phase 1, typically 0.4)
+          30% → \u03b5 = 0.3
+          60% → \u03b5 = 0.15
+          85% → \u03b5 = 0.05 (floor)
+        """
         # Handle legacy 'episode' keyword if passed
         if step is None and 'episode' in kwargs:
             step = kwargs['episode']
-            
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+        self._decision_count = getattr(self, '_decision_count', 0) + 1
+        total = getattr(self, '_total_decisions', 100)
+        frac  = self._decision_count / max(total, 1)
+
+        # Piecewise linear between waypoints
+        if frac < 0.30:
+            # epsilon_start → 0.3  (first 30%)
+            self.epsilon = self.epsilon_start - (self.epsilon_start - 0.3) * (frac / 0.30)
+        elif frac < 0.60:
+            # 0.3 → 0.15           (next 30%)
+            self.epsilon = 0.3 - (0.3 - 0.15) * ((frac - 0.30) / 0.30)
+        elif frac < 0.85:
+            # 0.15 → floor         (remaining 25%)
+            self.epsilon = 0.15 - (0.15 - self.epsilon_end) * ((frac - 0.60) / 0.25)
+        else:
+            self.epsilon = self.epsilon_end
+
         self.scheduler.step(step if step is not None else self.train_steps)
 
     def set_epsilon(self, eps: float):

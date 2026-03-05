@@ -32,7 +32,27 @@ const socket = io(BACKEND_URL, {
 // Setup global listeners ONCE outside of any React lifecycle
 const store = useSimulationStore.getState;
 
-socket.on('tick_update', (p) => store().applyTickUpdate(p));
+// ── Throttle tick_update to prevent React update overflow ─────────────────
+// Backend emits tick_updates with asyncio.sleep(0) — hundreds/sec.
+// React crashes with "Maximum update depth exceeded" if we call set() that fast.
+let _lastTickPayload: any = null;
+let _tickThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+const TICK_THROTTLE_MS = 30; // ~33 updates/sec — smooth enough for UI
+
+function _flushTick() {
+    _tickThrottleTimer = null;
+    if (_lastTickPayload) {
+        store().applyTickUpdate(_lastTickPayload);
+        _lastTickPayload = null;
+    }
+}
+
+socket.on('tick_update', (p) => {
+    _lastTickPayload = p;
+    if (!_tickThrottleTimer) {
+        _tickThrottleTimer = setTimeout(_flushTick, TICK_THROTTLE_MS);
+    }
+});
 socket.on('gantt_block', (block: GanttBlock) => store().addGanttBlock(block));
 socket.on('task_completed', (_p: TaskCompletedPayload) => {
     // Future: store completed task list; for now just log
@@ -44,6 +64,8 @@ socket.on('daily_summary', (p) => store().applyDailySummary(p));
 socket.on('simulation_complete', (p) => store().applySimulationComplete(p));
 socket.on('simulation_error', (p: { message: string; traceback: string }) => store().applySimulationError(p));
 socket.on('readme_progress', (p: ReadmeProgressPayload) => store().applyReadmeProgress(p));
+// Reset all frontend state when a new simulation starts (config change crash fix)
+socket.on('simulation_reset', () => store().reset());
 
 socket.on('connect', () => console.log('[Socket] Connected:', socket.id));
 socket.on('disconnect', (reason) => console.warn('[Socket] Disconnected:', reason));

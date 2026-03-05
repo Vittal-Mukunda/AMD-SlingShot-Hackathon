@@ -2,12 +2,12 @@
 Configuration file for RL-Driven Agentic Project Manager
 Contains all hyperparameters and environment settings
 
-v4 — Continual Online Learning Framework
-  * Workday simulation: 8h/day, 5-day week, slot-based clock
-  * Dynamic Poisson task arrivals (no lookahead for any agent)
-  * Heterogeneous workers with per-worker fatigue sensitivity
-  * Two-phase adaptive framework: Phase 1 (baseline obs) → Phase 2 (DQN control)
-  * State dim updated to 96 (was 88)
+v5 — Unified 365-Day Simulation Framework
+  * SIM_DAYS: single configurable horizon (1–365 working days)
+  * Adaptive event-driven time stepping (no fixed tick-rate assumption)
+  * Bounded replay buffer + controlled training/emission intervals
+  * Backlog, idle, and terminal reward penalties for correct DQN incentives
+  * Realistic deadline windows (1–5 working days from arrival)
 """
 
 # ============================================================================
@@ -20,12 +20,23 @@ WORK_DAYS_PER_WEEK = 5       # Mon–Fri
 WORK_START_SLOT    = 0       # Slot 0 = 09:00 within each day
 WORK_END_SLOT      = 15      # Slot 15 = last slot of 09:00–17:00 window
 
-# Two-phase framework durations
-PHASE1_DAYS   = 20           # Phase 1: 4 working weeks / 1 month (baseline-driven + passive DQN)
-PHASE2_DAYS   = 5            # Phase 2: 1 working week (DQN-controlled with online learning)
-TOTAL_SIM_DAYS = PHASE1_DAYS + PHASE2_DAYS   # 25 working days total
-EPISODE_HORIZON = TOTAL_SIM_DAYS * SLOTS_PER_DAY  # Max steps per episode
-NUM_TASKS       = 200   # Alias for TOTAL_TASKS (legacy compat)
+# ── UNIFIED SIMULATION HORIZON ────────────────────────────────────────────────
+# Single source of truth. Override via API SimConfig.sim_days.
+# PHASE1/PHASE2 are derived as fractions of SIM_DAYS at runtime by the runner.
+SIM_DAYS           = 100     # Default total working days (overridden by API)
+PHASE1_FRACTION    = 0.60    # 60% of SIM_DAYS → Phase 1 (baseline observation)
+PHASE2_FRACTION    = 0.40    # 40% of SIM_DAYS → Phase 2 (DQN scheduling)
+
+# Derived (set at runtime by SimulationRunner when user config is received)
+PHASE1_DAYS        = int(SIM_DAYS * PHASE1_FRACTION)
+PHASE2_DAYS        = SIM_DAYS - PHASE1_DAYS
+TOTAL_SIM_DAYS     = SIM_DAYS
+EPISODE_HORIZON    = TOTAL_SIM_DAYS * SLOTS_PER_DAY  # Max steps per episode
+
+# v10: TOTAL_TASKS is DYNAMICALLY computed from SIM_DAYS × TASK_ARRIVAL_RATE × 1.5
+import math
+TOTAL_TASKS        = max(50, math.ceil(SIM_DAYS * 4.0 * 1.5))  # default ~600
+NUM_TASKS          = TOTAL_TASKS  # Alias (legacy compat)
 
 # ============================================================================
 # WORKERS
@@ -62,14 +73,26 @@ FATIGUE_CARRYOVER   = 0.10   # Fraction of fatigue carried over to next day
 # TASKS & ARRIVAL PROCESS
 # ============================================================================
 
-TASK_ARRIVAL_RATE    = 3.5   # Mean tasks arriving per working day (Poisson)
-TOTAL_TASKS          = 200   # Total tasks across entire simulation
+TASK_ARRIVAL_RATE    = 4.0   # Mean tasks arriving per working day (Poisson)
+# TOTAL_TASKS is set dynamically at top of file. The line below is kept for
+# backward-compat reference but is overridden at runtime by the runner.
+# TOTAL_TASKS      = dynamically computed above
 MIN_TASK_DURATION_H  = 1.0   # Minimum task duration in hours
 MAX_TASK_DURATION_H  = 12.0  # Maximum task duration in hours
 TASK_COMPLEXITY_LEVELS = [1, 2, 3, 4, 5]   # Difficulty levels
 TASK_PRIORITIES      = [0, 1, 2, 3]         # low, medium, high, critical
-DEADLINE_MIN_H       = 4.0   # Minimum deadline in hours (8 slots)
-DEADLINE_MAX_H       = 40.0  # Maximum deadline in hours (80 slots)
+
+# ── REALISTIC DEADLINE WINDOW ─────────────────────────────────────────────────
+# Deadlines are set relative to arrival time, in working days.
+# Range: MIN_DEADLINE_DAYS … MAX_DEADLINE_DAYS (from task arrival).
+# This creates genuine scheduling pressure instead of distant, irrelevant deadlines.
+DEADLINE_MIN_DAYS    = 0.5   # Minimum: half a working day from arrival
+DEADLINE_MAX_DAYS    = 3.0   # Maximum: 3 working days from arrival (tighter scheduling pressure)
+
+# Legacy deadline fields (kept for backward-compat usage in old code paths)
+DEADLINE_MIN_H       = DEADLINE_MIN_DAYS * 8.0   # → 4h
+DEADLINE_MAX_H       = DEADLINE_MAX_DAYS * 8.0   # → 40h (but now enforced via DAYS)
+
 COMPLETION_TIME_NOISE = 0.25 # Std dev as fraction of expected time
 
 # Dependencies
@@ -77,11 +100,11 @@ DEPENDENCY_GRAPH_COMPLEXITY = 4
 MAX_DEPENDENCY_DEPTH        = 3
 
 # Stochasticity
-DEADLINE_SHOCK_PROB   = 0.08  # Probability of a deadline shock per slot
+DEADLINE_SHOCK_PROB   = 0.02  # Lowered: shocks remain but less frequent for longer runs
 DEADLINE_SHOCK_SLOTS  = 8     # Slots removed from deadline per shock
 
 # ============================================================================
-# DQN HYPERPARAMETERS  (v4 — Online Learning)
+# DQN HYPERPARAMETERS  (v5 — Bounded Online Learning)
 # ============================================================================
 
 # Network Architecture (Dueling DQN — PRESERVED from v3)
@@ -91,78 +114,125 @@ HIDDEN_LAYERS  = [256, 256]
 ACTIVATION     = 'relu'
 DUELING_DQN    = True
 
-# Training (tuned for online learning — fewer steps per decision, continuous updates)
-LEARNING_RATE        = 0.0003   # Slightly lower for online stability
-GAMMA                = 0.97     # Longer effective horizon for scheduling
-BATCH_SIZE           = 32       # Small batch for fast online updates
-REPLAY_BUFFER_SIZE   = 30000    # Adequate for online continual learning
-MIN_REPLAY_SIZE      = 64       # === CRITICAL FIX: must equal BATCH_SIZE to start training immediately ===
-                                 # was 512 — caused train_steps=0 (buffer never reached threshold)
-TARGET_UPDATE_FREQ   = 100      # Sync target net every 100 decisions (was 150)
+# ── BOUNDED REPLAY BUFFER ────────────────────────────────────────────────────
+# Hard cap regardless of SIM_DAYS. FIFO eviction via SumTree.write pointer.
+REPLAY_BUFFER_MAX_CAPACITY = 8000    # v9: denser PER sampling vs fewer transitions
+REPLAY_BUFFER_SIZE         = 8000    # Alias used by DQNAgent constructor
+
+# ── CONTROLLED TRAINING INTERVAL ─────────────────────────────────────────────
+# Train every N env steps — prevents per-step gradient updates at long horizons.
+TRAIN_EVERY_N_STEPS = 1              # v7: every decision triggers 3 gradient updates
+
+# ── RATE-LIMITED FRONTEND EMISSIONS ──────────────────────────────────────────
+# Emit tick_update every N ticks — prevents frontend flood at 365-day scale.
+EMIT_EVERY_N_TICKS = 8              # One Socket.IO emit per 8 env ticks
+
+# ── BOUNDED IN-MEMORY ACCUMULATORS ───────────────────────────────────────────
+# Caps so that memory does not grow O(horizon) for long runs.
+MAX_GANTT_BLOCKS_IN_MEMORY  = 500   # Per-baseline ring-buffer cap
+MAX_DAILY_METRICS_IN_MEMORY = 730   # Room for 2 × 365 days (phase1 + phase2)
+MAX_TASK_HISTORY_IN_MEMORY  = 2000  # Max task records retained in runner
+
+# Training (tuned for online learning)
+LEARNING_RATE        = 0.0002   # Adam LR
+GAMMA                = 0.95     # Discount factor
+BATCH_SIZE           = 64       # Mini-batch size
+MIN_REPLAY_SIZE      = 32       # v7: start training earlier
+TARGET_UPDATE_FREQ   = 200      # Sync target net every 200 training steps
 
 # Exploration (per-DECISION decay, not per-episode)
 EPSILON_START  = 1.0
 EPSILON_END    = 0.05
-EPSILON_DECAY  = 0.999     # Per-decision decay — reaches 0.5 in ~700 decisions, 0.1 in ~2300
-
-# Phase 2 epsilon (DQN starts with partial exploration already done in Phase 1)
-EPSILON_PHASE2_START = 0.35  # Start Phase 2 with partial exploration
+EPSILON_DECAY  = 0.9998    # Slower decay for longer runs — reaches 0.5 in ~3400 decisions
+EPSILON_PHASE2_START = 0.4   # Phase 2 starts with partial exploration
 
 # Prioritized Experience Replay
 PER_ALPHA       = 0.6
 PER_BETA_START  = 0.4
-PER_BETA_FRAMES = 50000
+PER_BETA_FRAMES = 100000   # Larger frame budget for 365-day runs
 
 # LR Scheduler
-LR_SCHEDULER_T0   = 2000   # Steps per cosine restart (longer for online mode)
+LR_SCHEDULER_T0   = 5000   # Steps per cosine restart (longer for 365-day)
 LR_SCHEDULER_T_MULT = 1
 
-# Legacy training config (kept for backward compat with --full pipeline)
+# Legacy training config (kept for backward compat)
 MAX_EPISODES            = 5000
 CHECKPOINT_FREQ         = 100
 EARLY_STOPPING_PATIENCE = 1000
 CONVERGENCE_THRESHOLD   = 1000
 
 # ============================================================================
-# REWARD FUNCTION  (Makespan-centric)
+# REWARD FUNCTION  (v5 — Correct Incentives for 365-day Scheduling)
 # ============================================================================
 
-# Primary reward: task completion
-REWARD_COMPLETION_BASE   = 10.0  # × (priority+1) × quality per completed task
+# Primary reward: task completion (scales with priority + quality)
+REWARD_COMPLETION_BASE   = 0.8   # v10: raised to 0.8; completion reward = base × priority × quality²·⁵
 
-# Idle penalty: incentivise keeping workers busy
-REWARD_IDLE_PENALTY      = -0.2  # per available-but-idle worker per slot
+# Early/on-time completion bonuses (v8)
+REWARD_EARLY_COMPLETION_BONUS  = 0.2   # +0.2 if completed 20%+ ahead of deadline
+REWARD_ONTIME_COMPLETION_BONUS = 0.1   # +0.1 for any on-time completion
 
-# Lateness penalty: tasks completed after their deadline
-REWARD_LATENESS_PENALTY  = -1.5  # per slot late at completion
+# ── BACKLOG PENALTY ──────────────────────────────────────────────────────────
+REWARD_BACKLOG_PENALTY   = -0.02  # v7: scaled for [-2,+1] range
 
-# Overload balance: std-dev of worker loads (stronger penalty → meaningful gradient)
-REWARD_OVERLOAD_WEIGHT   = -0.5  # was -0.15; stronger signal against load imbalance
+# ── TERMINAL UNFINISHED PENALTY ──────────────────────────────────────────────
+REWARD_TERMINAL_UNFINISHED_PENALTY = -0.5   # v7: per unfinished task (normalized)
 
-# Deadline urgency: unstarted tasks with very little time left
-REWARD_URGENCY_PENALTY   = -0.3  # per unstarted task with ≤ 4 slots to deadline
+# Idle penalty
+REWARD_IDLE_PENALTY      = -0.10  # v7: normalized
+
+# Per-step idle worker penalty
+REWARD_IDLE_WORKER_PENALTY = -0.05
+
+# Lateness penalty
+REWARD_LATENESS_PENALTY  = -0.1   # v7: per slot late at completion
+
+# Overload: per-worker penalty at/above capacity
+REWARD_OVERLOAD_WEIGHT   = -5.0   # v7: FATAL per overloaded worker
+
+# Deadline urgency
+REWARD_URGENCY_PENALTY   = -0.1   # v7: normalized
 
 # Terminal bonus: awarded when ALL tasks are completed
-REWARD_MAKESPAN_BONUS    = 50.0  # reduced from 100 to keep gradient scale manageable
+REWARD_MAKESPAN_BONUS    = 1.0    # v7: normalized
 
-# Step delay: small constant nudge to act quickly
-REWARD_DELAY_WEIGHT      = -0.02  # reduced to not dominate early learning
+# Step delay
+REWARD_DELAY_WEIGHT      = -0.001
 
-# Deadline miss: one-shot penalty per deadline miss
-REWARD_DEADLINE_MISS_PENALTY = -10.0  # was -15; keep in proportion with completion reward
+# Deadline miss
+REWARD_DEADLINE_MISS_PENALTY = -0.5  # v7: normalized
 
-# Legacy (kept for compat)
+# Skill-match shaped reward
+REWARD_SKILL_MATCH_WEIGHT    = 0.3   # v7: quality bonus
+REWARD_FATIGUE_ASSIGN_PENALTY = -0.2
+REWARD_OVERLOAD_ASSIGN_PENALTY = -5.0  # v7: hard block
+
+# Reward clipping (v7: normalized range)
+REWARD_CLIP_MIN = -2.0
+REWARD_CLIP_MAX =  1.0
+
+# Idle-waiting penalty
+REWARD_IDLE_WAITING_PENALTY = -0.05
+
+# Legacy
 REWARD_THROUGHPUT_WEIGHT  = 2.0
-REWARD_STRATEGIC_DEFER    = 0.5
+REWARD_STRATEGIC_DEFER    = 0.3
 REWARD_EXPLORATION_BONUS  = 0.3
+REWARD_LOAD_BALANCE_BONUS = 0.1
+REWARD_OVERLOAD_IMMEDIATE = -5.0   # v7: hard overload penalty
 FATIGUE_QUALITY_PENALTY   = 0.25
+
+# ============================================================================
+# TEAM SYNERGY
+# ============================================================================
+TEAM_SYNERGY_ENABLED = False
 
 # ============================================================================
 # BASELINE CONFIGURATION
 # ============================================================================
 
 BASELINE_SKILL_ESTIMATION_EPISODES = 10
-BASELINE_DEBUG_SKILL = False   # Set True to print per-assignment skill logs
+BASELINE_DEBUG_SKILL = False
 
 # ============================================================================
 # EVALUATION CONFIGURATION
@@ -220,4 +290,4 @@ DEMO_STEP_DELAY      = 1.0
 # ============================================================================
 
 LINUCB_ALPHA       = 1.0
-LINUCB_FEATURE_DIM = 96   # Updated to match new STATE_DIM
+LINUCB_FEATURE_DIM = 96   # Matches STATE_DIM

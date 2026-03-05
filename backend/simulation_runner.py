@@ -1,21 +1,20 @@
 """
-backend/simulation_runner.py — Complete rewrite fixing all broken links.
+backend/simulation_runner.py — v5: Unified 365-Day Simulation Runner.
 
-BUGS FIXED:
-  1. Action decoding: task_idx = action // num_workers, not action % num_tasks
-  2. Phase 2 uses Greedy baseline env (carries forward from Phase 1) not a fresh env
-  3. DQN collects transitions from ALL 5 baselines (not just Greedy) for richer replay
-  4. Phase 2 separated: background training first → emit training_progress → emit
-     phase2_ready → then DQN scheduling starts (3 distinct sub-phases)
-  5. simulation_error emitted on any exception so nothing is silent
-  6. phase_transition now says new_phase=1.5 (TRAINING) so frontend shows spinner;
-     phase2_ready triggers actual Phase 2 Gantt
-  7. Gantt block action encoding uses correct formula
-  8. Phase 1 baselines run sequentially per-baseline (not interleaved) to keep each
-     baseline's Gantt coherent, then all results collected before transition
+REFACTOR SUMMARY (v5):
+  1. UNIFIED SIM_DAYS — Single configurable horizon, shared by baselines and DQN.
+     No hardcoded 60-day or 30-day limits anywhere.
+  2. BOUNDED MEMORY — daily metrics and gantt_blocks capped via collections.deque.
+  3. RATE-LIMITED EMISSIONS — tick_update emitted every EMIT_EVERY_N_TICKS (not every step).
+  4. ADAPTIVE TIME STEPPING — advance_to_next_event() used when no valid assign actions,
+     skipping idle ticks without wasting CPU or emitting stale frames.
+  5. CONTROLLED TRAINING INTERVAL — DQN trained every TRAIN_EVERY_N_STEPS steps.
+  6. CONSISTENT MECHANICS — DQN and all baselines use identical env configuration
+     and identical temporal constraints (same total_sim_slots).
 """
 
 import asyncio
+import collections
 import csv
 import os
 import sys
@@ -45,20 +44,35 @@ try:
 except ImportError:
     _HAS_RANDOM = False
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-# Emit every step for real-time frontend updates (was 2 — caused stale UI)
-EMIT_EVERY = 1
-# Minimum number of training gradient steps in Phase 2 training sub-phase
+# ── Runtime constants ─────────────────────────────────────────────────────────
+# Emit only once every N ticks — prevents frontend flood at 365-day scale.
+def _emit_every():
+    return getattr(cfg_module, 'EMIT_EVERY_N_TICKS', 8)
+
+# Minimum gradient steps during Phase 2 training sub-phase.
 MIN_TRAINING_STEPS = 200
+
+# How often to train DQN during Phase 2 scheduling (in env steps).
+def _train_every():
+    return getattr(cfg_module, 'TRAIN_EVERY_N_STEPS', 4)
 
 
 def _make_env(cfg, seed_offset: int = 0) -> ProjectEnv:
-    """Create a fresh ProjectEnv matching user config."""
+    """
+    Create a fresh ProjectEnv matching user config.
+
+    total_sim_slots is always derived from the unified SIM_DAYS so that
+    both the baseline and DQN paths operate under identical temporal constraints.
+    """
+    sim_days = getattr(cfg_module, 'SIM_DAYS', cfg.days_phase1 + cfg.days_phase2)
+    total_slots = sim_days * cfg_module.SLOTS_PER_DAY
+    # v10 FIX: use cfg_module.TOTAL_TASKS (dynamic cap), NOT cfg.task_count (raw frontend)
+    total_tasks = getattr(cfg_module, 'TOTAL_TASKS', cfg.task_count)
     return ProjectEnv(
         num_workers=cfg.num_workers,
-        total_tasks=cfg.task_count,
+        total_tasks=total_tasks,
         seed=cfg.seed + seed_offset,
-        total_sim_slots=(cfg.days_phase1 + cfg.days_phase2) * cfg_module.SLOTS_PER_DAY,
+        total_sim_slots=total_slots,
     )
 
 
@@ -74,17 +88,18 @@ def _decode_action_parts(action: int, num_workers: int) -> Tuple[int, int]:
 
 class SimulationRunner:
     """
-    Two-phase simulation runner.
+    Two-phase simulation runner (v5 — Unified 365-Day).
 
-    Phase 1: 5 baselines run SEQUENTIALLY (one full run each) on independent envs.
-             Each baseline emits tick_update + gantt_block in real time.
-             DQN stores transitions from ALL baselines.
+    Phase 1: All baselines run SEQUENTIALLY on independent envs sharing the
+             same total_sim_slots (derived from SIM_DAYS).
+             Each baseline emits tick_update + gantt_block at rate-limited intervals.
+             DQN stores transitions from ALL baselines into a bounded replay buffer.
 
-    Phase 2 (training): DQN trains on collected replay buffer offline.
-             Emits training_progress events (percentage only).
-             Emits phase2_ready when training is done.
+    Phase 2a (training): DQN trains offline on collected transitions.
+             Emits training_progress events only.
 
-    Phase 2 (scheduling): DQN schedules on fresh env, emitting tick_update + gantt_block.
+    Phase 2b (scheduling): DQN schedules on fresh env, emitting at rate-limited intervals.
+             Online training fires every TRAIN_EVERY_N_STEPS steps.
     """
 
     def __init__(self, cfg, sio):
@@ -92,12 +107,69 @@ class SimulationRunner:
         self.sio = sio
 
         # ── Apply user config to cfg_module globals ──────────────────────────
-        cfg_module.PHASE1_DAYS    = cfg.days_phase1
-        cfg_module.PHASE2_DAYS    = cfg.days_phase2
-        cfg_module.TOTAL_SIM_DAYS = cfg.days_phase1 + cfg.days_phase2
-        cfg_module.TOTAL_TASKS    = cfg.task_count
-        cfg_module.NUM_TASKS      = cfg.task_count
-        cfg_module.NUM_WORKERS    = cfg.num_workers
+        # Derive phase durations from unified SIM_DAYS if set, else from legacy fields.
+        sim_days = getattr(cfg, 'sim_days', None)
+        if sim_days and sim_days > 0:
+            cfg_module.SIM_DAYS        = sim_days
+            cfg_module.PHASE1_DAYS     = max(1, int(sim_days * cfg_module.PHASE1_FRACTION))
+            cfg_module.PHASE2_DAYS     = max(1, sim_days - cfg_module.PHASE1_DAYS)
+        else:
+            # Legacy: derive SIM_DAYS from explicit phase days
+            cfg_module.PHASE1_DAYS    = cfg.days_phase1
+            cfg_module.PHASE2_DAYS    = cfg.days_phase2
+            cfg_module.SIM_DAYS       = cfg.days_phase1 + cfg.days_phase2
+
+        cfg_module.TOTAL_SIM_DAYS  = cfg_module.SIM_DAYS
+        cfg_module.NUM_WORKERS     = cfg.num_workers
+
+        # v10 Fix 1: Dynamically compute TOTAL_TASKS from SIM_DAYS × arrival_rate × 1.5
+        # This guarantees enough tasks for the full run with 50% headroom.
+        import math
+        dynamic_task_cap = max(50, math.ceil(
+            cfg_module.SIM_DAYS * cfg_module.TASK_ARRIVAL_RATE * 1.5
+        ))
+        # Use the LARGER of user-submitted task_count and dynamic cap
+        cfg_module.TOTAL_TASKS = max(int(cfg.task_count), dynamic_task_cap)
+        cfg_module.NUM_TASKS   = cfg_module.TOTAL_TASKS
+
+        # v8 Fix 3: Propagate tasks_per_day to config module
+        tasks_per_day = getattr(cfg, 'tasks_per_day', None) or cfg_module.TASK_ARRIVAL_RATE
+        cfg_module.TASK_ARRIVAL_RATE = float(tasks_per_day)
+
+        # v9 Fix 6: propagate max_worker_load if user provided it
+        max_worker_load = getattr(cfg, 'max_worker_load', None)
+        if max_worker_load and max_worker_load > 0:
+            cfg_module.MAX_WORKER_LOAD = int(max_worker_load)
+
+        # v9 Fix 2+6: allow user-supplied phase1_fraction to override global default
+        phase1_frac = getattr(cfg, 'phase1_fraction', None)
+        if phase1_frac and 0.0 < phase1_frac < 1.0:
+            cfg_module.PHASE1_FRACTION = float(phase1_frac)
+            # Recompute phase days with updated fraction if sim_days was set
+            if sim_days and sim_days > 0:
+                cfg_module.PHASE1_DAYS = max(1, int(sim_days * cfg_module.PHASE1_FRACTION))
+                cfg_module.PHASE2_DAYS = max(1, sim_days - cfg_module.PHASE1_DAYS)
+
+        # v10 Fix 4: Comprehensive startup log with all effective values
+        print(f"[runner] ══════════════════════════════════════════════════")
+        print(f"[runner]   SIM_DAYS       = {cfg_module.SIM_DAYS}")
+        print(f"[runner]   PHASE1_DAYS    = {cfg_module.PHASE1_DAYS}")
+        print(f"[runner]   PHASE2_DAYS    = {cfg_module.PHASE2_DAYS}")
+        print(f"[runner]   PHASE1_FRAC    = {cfg_module.PHASE1_FRACTION:.2f}")
+        print(f"[runner]   TOTAL_TASKS    = {cfg_module.TOTAL_TASKS} (dynamic cap)")
+        print(f"[runner]   tasks_per_day  = {cfg_module.TASK_ARRIVAL_RATE}")
+        print(f"[runner]   workers        = {cfg.num_workers}")
+        print(f"[runner]   max_load       = {cfg_module.MAX_WORKER_LOAD}")
+        print(f"[runner] ══════════════════════════════════════════════════")
+
+        # v9 Fix 1: Configure epsilon scoped to Phase 2 decisions only
+        tasks_per_day = getattr(cfg, 'tasks_per_day', None) or getattr(cfg_module, 'TASK_ARRIVAL_RATE', 4.0)
+        self.agent = DQNAgent()
+        self.agent.configure_epsilon_schedule(
+            tasks_per_day=tasks_per_day,
+            phase2_days=cfg_module.PHASE2_DAYS,  # ONLY Phase 2 (not full SIM_DAYS)
+            sim_days=cfg_module.SIM_DAYS,
+        )
 
         # ── State ─────────────────────────────────────────────────────────────
         self._pause_event = asyncio.Event()
@@ -109,16 +181,13 @@ class SimulationRunner:
         self._running = False
         self._injected_tasks: List[Dict] = []
 
-        # ── Metrics storage ───────────────────────────────────────────────────
-        self._phase1_metrics:   List[Dict] = []
-        self._phase2_metrics:   List[Dict] = []
+        # ── BOUNDED Metrics storage ───────────────────────────────────────────
+        max_days = getattr(cfg_module, 'MAX_DAILY_METRICS_IN_MEMORY', 730)
+        self._phase1_metrics = collections.deque(maxlen=max_days)
+        self._phase2_metrics = collections.deque(maxlen=max_days)
         self._baseline_snapshots: Dict[str, Dict] = {}
 
-        # ── DQN agent (shared across all phases) ─────────────────────────────
-        self.agent = DQNAgent()
-
         # ── Per-baseline environments (Phase 1) ───────────────────────────────
-        # Order matters: the user sees them in this order in the UI tabs
         self._baseline_defs: List[Tuple[str, Any]] = self._make_baseline_defs()
 
         # ── Phase 2 scheduling env (fresh, separate from Phase 1 envs) ───────
@@ -151,7 +220,7 @@ class SimulationRunner:
         self._injected_tasks.append(task_data)
 
     def get_status(self) -> Dict:
-        """Returns tick_update-compatible dict for reconnect (Bug 8)."""
+        """Returns tick_update-compatible dict for reconnect."""
         env = self._dqn_env if self._dqn_env is not None else _make_env(self.cfg)
         active = "Training" if self._phase == 2 else ("DQN" if self._phase == 3 else "Greedy")
         return {
@@ -215,14 +284,13 @@ class SimulationRunner:
         Uses the CORRECT decoding formula: task_slot = action // num_workers
         """
         num_workers = env.num_workers
-        max_assign = 20 * num_workers  # action space assign boundary
+        max_assign = 20 * num_workers
 
         if action >= max_assign:
             return None  # defer or escalate — no gantt block
 
         task_slot, worker_idx = _decode_action_parts(action, num_workers)
 
-        # Get the visible task list in exact same order as env uses
         tick = env.clock.tick
         available = [
             t for t in env.tasks
@@ -274,12 +342,14 @@ class SimulationRunner:
         })
 
         p1_metrics, gantt_by_baseline = await self._run_phase1()
-        self._phase1_metrics = p1_metrics
+        for m in p1_metrics:
+            self._phase1_metrics.append(m)
 
         # Build baseline snapshot
         baseline_snapshot: Dict[str, Dict] = {}
+        p1_list = list(self._phase1_metrics)
         for bname, _ in self._baseline_defs:
-            rows = [m for m in p1_metrics if m.get("baseline") == bname]
+            rows = [m for m in p1_list if m.get("baseline") == bname]
             if rows:
                 baseline_snapshot[bname] = {
                     "throughput":      float(np.mean([r["throughput_per_day"] for r in rows])),
@@ -287,7 +357,7 @@ class SimulationRunner:
                     "lateness_rate":   float(np.mean([r["lateness_rate"] for r in rows])),
                     "quality_score":   float(np.mean([r["quality_score"] for r in rows])),
                     "overload_events": float(np.mean([r["overload_events"] for r in rows])),
-                    "gantt_blocks":    gantt_by_baseline.get(bname, []),
+                    "gantt_blocks":    list(gantt_by_baseline.get(bname, [])),
                 }
         self._baseline_snapshots = baseline_snapshot
 
@@ -297,7 +367,7 @@ class SimulationRunner:
             "baseline_results_snapshot": baseline_snapshot,
         })
 
-        # ── Phase 2a: DQN training (background, emits training_progress) ──
+        # ── Phase 2a: DQN training ────────────────────────────────────────
         self._phase = 2
         await self._run_dqn_training()
 
@@ -309,11 +379,15 @@ class SimulationRunner:
         # ── Phase 2b: DQN scheduling ───────────────────────────────────────
         self._phase = 3
         p2_metrics = await self._run_phase2_scheduling()
-        self._phase2_metrics = p2_metrics
+        for m in p2_metrics:
+            self._phase2_metrics.append(m)
 
         # ── Final metrics ──────────────────────────────────────────────────
         overall = self._dqn_env.compute_metrics() if self._dqn_env else {}
-        final = self._build_final_metrics(p1_metrics, p2_metrics, baseline_snapshot, overall)
+        final = self._build_final_metrics(
+            list(self._phase1_metrics),
+            list(self._phase2_metrics),
+            baseline_snapshot, overall)
         await self.sio.emit("simulation_complete", {"final_metrics": final})
 
         self._save_results()
@@ -323,14 +397,20 @@ class SimulationRunner:
     async def _run_phase1(self) -> Tuple[List[Dict], Dict[str, List]]:
         """
         Run each baseline in full on its own independent env.
-        Emits tick_update + gantt_block for each step so the frontend
-        can show live Gantt updates per baseline tab.
-        Stores ALL transitions (from all baselines) into the DQN replay buffer.
-        """
-        all_metrics:      List[Dict]        = []
-        gantt_by_baseline: Dict[str, List]  = {}
+        Both baseline and DQN environments use the SAME total_sim_slots
+        so all policies operate under identical temporal constraints.
 
-        phase1_slots = self.cfg.days_phase1 * cfg_module.SLOTS_PER_DAY
+        Emits tick_update every EMIT_EVERY_N_TICKS ticks (rate-limited).
+        Uses advance_to_next_event() when no valid actions (adaptive stepping).
+        Stores transitions into the DQN replay buffer (bounded by config).
+        """
+        all_metrics:      List[Dict]       = []
+        gantt_by_baseline: Dict[str, List] = {}
+        emit_every = _emit_every()
+        max_gantt  = getattr(cfg_module, 'MAX_GANTT_BLOCKS_IN_MEMORY', 500)
+
+        # Phase 1 runs over ALL of SIM_DAYS (both phases share the same environment horizon)
+        total_slots = cfg_module.SIM_DAYS * cfg_module.SLOTS_PER_DAY
 
         for bl_idx, (bname, BLClass) in enumerate(self._baseline_defs):
             if self._cancelled:
@@ -340,11 +420,12 @@ class SimulationRunner:
             policy = BLClass(env)
             state  = env.reset()
 
-            gantt_blocks: List[Dict] = []
-            prev_day     = 0
+            # Bounded Gantt storage (ring-buffer, per baseline)
+            gantt_deque = collections.deque(maxlen=max_gantt)
+            prev_day    = 0
             day_decisions = 0
+            step_count  = 0
 
-            # Announce to frontend which baseline is running
             await self.sio.emit("tick_update", {
                 "tick": 0, "day": 0, "phase": 1,
                 "worker_states": self._serialize_workers(env),
@@ -354,8 +435,7 @@ class SimulationRunner:
             })
             await asyncio.sleep(0.01)
 
-            step_count = 0
-            while True:
+            while env.clock.tick < total_slots:
                 if self._cancelled:
                     break
                 await self._pause_event.wait()
@@ -376,14 +456,14 @@ class SimulationRunner:
 
                 valid = env.get_valid_actions()
 
-                # ── No valid actions: advance clock or terminate ───────────
+                # ── No valid actions: use adaptive event-driven stepping ───
                 if not valid:
-                    _, _, done, _ = env.step(20 * env.num_workers)
-                    if done:
+                    ticks_advanced = env.advance_to_next_event()
+                    done_check, _ = env._check_termination()
+                    if done_check or env.clock.tick >= total_slots:
                         break
-                    step_count += 1
-                    # Emit periodically while idle
-                    if step_count % EMIT_EVERY == 0:
+                    step_count += ticks_advanced
+                    if step_count % emit_every == 0:
                         await self.sio.emit("tick_update", {
                             "tick": env.clock.tick, "day": env.clock.day, "phase": 1,
                             "worker_states": self._serialize_workers(env),
@@ -399,30 +479,29 @@ class SimulationRunner:
                 if action not in valid:
                     action = valid[0]
 
-                # ── Build gantt block BEFORE stepping (so visible tasks are correct) ─
+                # ── Build gantt block BEFORE stepping ─────────────────────
                 block = self._build_gantt_block(env, action, bname)
 
                 # ── Step environment ───────────────────────────────────────
                 next_state, reward, done, info = env.step(action)
 
-                # ── Store transition in DQN replay buffer ──────────────────
-                self.agent.store_transition(
-                    np.array(state,      dtype=np.float32),
-                    action,
-                    reward,
-                    np.array(next_state, dtype=np.float32),
-                    float(done),
+                # ── Store transition with MAX PRIORITY in bounded DQN replay buffer (v7 Fix 3)
+                state_copy = np.array(state, dtype=np.float32)
+                next_copy  = np.array(next_state, dtype=np.float32)
+                max_p = self.agent.replay_buffer._max_priority
+                self.agent.replay_buffer.tree.add(
+                    max_p ** self.agent.replay_buffer.alpha,
+                    (state_copy, action, reward, next_copy, float(done))
                 )
                 self.agent.steps_done += 1
 
-                # ── Emit gantt block ───────────────────────────────────────
+                # ── Emit gantt block (bounded) ─────────────────────────────
                 if block is not None:
-                    gantt_blocks.append(block)
+                    gantt_deque.append(block)
                     await self.sio.emit("gantt_block", block)
 
                 # ── Emit task_completed ────────────────────────────────────
                 if info.get("completed_tasks", 0) > 0:
-                    # Emit for the most recently completed task
                     recent = ([t for t in env.completed_tasks
                                if t.actual_completion_tick == env.clock.tick - 1]
                               or [])
@@ -437,9 +516,9 @@ class SimulationRunner:
                             "quality":         float(getattr(ct, 'quality_score', 1.0)),
                         })
 
-                # ── Emit tick_update every step (real-time UI) ─────────────
+                # ── Rate-limited tick_update ───────────────────────────────
                 step_count += 1
-                if step_count % EMIT_EVERY == 0:
+                if step_count % emit_every == 0:
                     await self.sio.emit("tick_update", {
                         "tick":          env.clock.tick,
                         "day":           env.clock.day,
@@ -471,9 +550,7 @@ class SimulationRunner:
                     "metrics_per_policy": {bname: m},
                 })
 
-            gantt_by_baseline[bname] = gantt_blocks
-
-            # Brief pause between baselines so frontend can clear/switch tabs
+            gantt_by_baseline[bname] = list(gantt_deque)
             await asyncio.sleep(0.05)
 
         buf_size = len(self.agent.replay_buffer)
@@ -484,14 +561,11 @@ class SimulationRunner:
 
     async def _run_dqn_training(self):
         """
-        Train DQN on the replay buffer collected from Phase 1.
-        Runs synchronously (blocking) but yields to the event loop every
-        few steps so WebSocket heartbeats continue.
-        Emits only training_progress (percentage) events.
+        Train DQN on the bounded replay buffer collected from Phase 1.
+        Yields to event loop every 10 steps so WebSocket heartbeats continue.
         """
         buf_size = len(self.agent.replay_buffer)
 
-        # Lower min_replay_size if not enough data in buffer
         if buf_size < self.agent.min_replay_size:
             self.agent.min_replay_size = max(self.agent.batch_size, buf_size)
             print(f"[Training] Lowered min_replay_size to {self.agent.min_replay_size} "
@@ -505,7 +579,8 @@ class SimulationRunner:
         target_steps = max(MIN_TRAINING_STEPS, buf_size // 2)
         print(f"[Training] Starting {target_steps} gradient steps. Buffer={buf_size}")
 
-        self.agent.set_epsilon(cfg_module.EPSILON_PHASE2_START)
+        # v8 Fix 1: Do NOT reset epsilon — let the schedule continue from Phase 1
+        # self.agent.set_epsilon(cfg_module.EPSILON_PHASE2_START)  # REMOVED
         steps_done = 0
 
         while steps_done < target_steps:
@@ -520,7 +595,6 @@ class SimulationRunner:
                 print(f"[Training] train_step error: {e}")
                 break
 
-            # Yield to event loop every 10 steps
             if steps_done % 10 == 0:
                 pct = int(steps_done / target_steps * 100)
                 await self.sio.emit("training_progress", {
@@ -536,19 +610,37 @@ class SimulationRunner:
 
     async def _run_phase2_scheduling(self) -> List[Dict]:
         """
-        DQN controls the scheduler on a fresh Phase-2 environment.
-        Emits tick_update + gantt_block per step.
+        DQN controls the scheduler on a fresh env using the unified SIM_DAYS horizon.
+        Rate-limited emissions, adaptive stepping, controlled online training.
         """
-        env         = _make_env(self.cfg, seed_offset=99)
+        env           = _make_env(self.cfg, seed_offset=99)
         self._dqn_env = env
-        state       = env.reset()
+        state         = env.reset()
+
+        # v10: Assert task list is large enough for the full simulation
+        # Poisson process naturally generates ~(rate×days) tasks ± variance,
+        # so we use 0.8× as the minimum threshold (not 1.0×, Poisson has variance)
+        min_expected = cfg_module.SIM_DAYS * cfg_module.TASK_ARRIVAL_RATE * 0.8
+        actual_tasks = len(env.tasks)
+        print(f"[Phase2] Task list: {actual_tasks} tasks generated "
+              f"(min expected = {min_expected:.0f}, "
+              f"cap = {cfg_module.TOTAL_TASKS}, "
+              f"sim_days = {cfg_module.SIM_DAYS})")
+        assert actual_tasks >= min_expected, (
+            f"Task list too short: {actual_tasks} < {min_expected:.0f} "
+            f"(SIM_DAYS={cfg_module.SIM_DAYS}, rate={cfg_module.TASK_ARRIVAL_RATE})"
+        )
+
+        emit_every   = _emit_every()
+        train_every  = _train_every()
+        total_slots  = cfg_module.SIM_DAYS * cfg_module.SLOTS_PER_DAY
+        # Phase 2 runs the FULL horizon — DQN gets fresh env with same total_slots
+        # (Previously used only phase2_slots = 20% of SIM_DAYS, causing early termination)
 
         prev_day     = 0
         day_decisions = 0
-        all_metrics:  List[Dict] = []
+        all_metrics: List[Dict] = []
         step_count   = 0
-
-        phase2_slots = self.cfg.days_phase2 * cfg_module.SLOTS_PER_DAY
 
         await self.sio.emit("tick_update", {
             "tick": 0, "day": 0, "phase": 3,
@@ -558,11 +650,11 @@ class SimulationRunner:
         })
         await asyncio.sleep(0.01)
 
-        # Safety: prevent infinite loop (e.g. tick/state mismatch at Day 4, Tick 79)
-        max_iterations = phase2_slots + 200
+        # Safety guard: cap iterations at total_slots + generous buffer
+        max_iterations = total_slots + max(500, total_slots // 2)
         iteration_count = 0
 
-        while env.clock.tick < phase2_slots:
+        while env.clock.tick < total_slots:
             if self._cancelled:
                 break
             await self._pause_event.wait()
@@ -592,17 +684,19 @@ class SimulationRunner:
                 })
 
             valid = env.get_valid_actions()
+
+            # ── No valid actions: adaptive event-driven stepping ───────────
             if not valid:
-                # No valid actions: advance time via defer (no-op when queue empty)
                 tick_before = env.clock.tick
-                _, _, done, _ = env.step(20 * env.num_workers)
-                if env.clock.tick <= tick_before:
-                    print(f"[Phase2] WARN: clock did not advance at tick={tick_before}, forcing break")
+                ticks_adv = env.advance_to_next_event()
+                if env.clock.tick <= tick_before and ticks_adv == 0:
+                    print(f"[Phase2] WARN: clock stuck at tick={tick_before}, forcing break")
                     break
-                if done:
+                done_check, _ = env._check_termination()
+                if done_check:
                     break
-                step_count += 1
-                if step_count % EMIT_EVERY == 0:
+                step_count += ticks_adv
+                if step_count % emit_every == 0:
                     await self.sio.emit("tick_update", {
                         "tick": env.clock.tick, "day": env.clock.day, "phase": 3,
                         "worker_states": self._serialize_workers(env),
@@ -612,26 +706,83 @@ class SimulationRunner:
                 await asyncio.sleep(0)
                 continue
 
-            # DQN inference only (no training — model was pre-trained in Phase 2a)
-            action = self.agent.select_action(
-                np.array(state, dtype=np.float32), valid, greedy=True
-            )
-            if action not in valid:
+            # ── v8 Fix 2: DQN selects and executes ALL available assignments ──
+            # Agent is called once per available task (not once per tick).
+            assign_actions = [a for a in valid if a < 20 * env.num_workers]
+            last_block = None
+            done = False
+
+            if assign_actions:
+                assignments_this_tick = 0
+                # Loop: assign as many tasks as possible before clock advances
+                for _assign_iter in range(50):  # safety cap
+                    current_valid = env.get_valid_actions()
+                    current_assign = [a for a in current_valid if a < 20 * env.num_workers]
+                    if not current_assign:
+                        break
+
+                    action = self.agent.select_action(
+                        np.array(state, dtype=np.float32), current_valid, greedy=False
+                    )
+                    if action not in current_valid:
+                        action = current_assign[0]
+
+                    block = self._build_gantt_block(env, action, "DQN")
+                    next_state, reward, done, info = env.step(action)
+
+                    # Store transition + train
+                    self.agent.store_transition(
+                        np.array(state, dtype=np.float32),
+                        action, reward,
+                        np.array(next_state, dtype=np.float32),
+                        float(done),
+                    )
+                    self.agent.steps_done += 1
+                    buf_size = len(self.agent.replay_buffer)
+                    if buf_size >= self.agent.min_replay_size:
+                        # v10 Fix 3: tapered training — 4 grad steps while exploring, 2 at ε floor
+                        n_grad = 2 if self.agent.epsilon <= self.agent.epsilon_end + 0.01 else 4
+                        for _ in range(n_grad):
+                            self.agent.train_step()
+                        self.agent.update_epsilon()
+
+                    state = next_state
+                    last_block = block
+                    assignments_this_tick += 1
+                    if block is not None:
+                        await self.sio.emit("gantt_block", block)
+                    if done:
+                        break
+
+                day_decisions += assignments_this_tick
+
+            else:
+                # Only defer actions available
                 action = valid[0]
+                block = self._build_gantt_block(env, action, "DQN")
+                tick_before = env.clock.tick
+                next_state, reward, done, info = env.step(action)
 
-            block = self._build_gantt_block(env, action, "DQN")
+                self.agent.store_transition(
+                    np.array(state, dtype=np.float32),
+                    action, reward,
+                    np.array(next_state, dtype=np.float32),
+                    float(done),
+                )
+                self.agent.steps_done += 1
+                buf_size = len(self.agent.replay_buffer)
+                if buf_size >= self.agent.min_replay_size:
+                    self.agent.train_step()
+                    self.agent.update_epsilon()
 
-            tick_before = env.clock.tick
-            next_state, reward, done, info = env.step(action)
-            if env.clock.tick <= tick_before:
-                print(f"[Phase2] WARN: clock did not advance at tick={tick_before} after step, forcing break")
-                break
-
-            if block is not None:
-                await self.sio.emit("gantt_block", block)
+                if env.clock.tick <= tick_before:
+                    print(f"[Phase2] WARN: clock stuck at tick={tick_before}")
+                    break
+                state = next_state
+                last_block = block
 
             step_count += 1
-            if step_count % EMIT_EVERY == 0:
+            if step_count % emit_every == 0:
                 await self.sio.emit("tick_update", {
                     "tick":          env.clock.tick,
                     "day":           env.clock.day,
@@ -639,20 +790,16 @@ class SimulationRunner:
                     "worker_states": self._serialize_workers(env),
                     "queue_state":   self._serialize_queue(env),
                     "last_assignment": {
-                        "task_id":   block["task_id"] if block else "—",
-                        "worker_id": block["worker_id"] if block else "—",
+                        "task_id":   last_block["task_id"] if last_block else "—",
+                        "worker_id": last_block["worker_id"] if last_block else "—",
                         "policy":    "DQN",
-                    } if block else None,
+                    } if last_block else None,
                     "active_policy": "DQN",
                 })
-            await asyncio.sleep(0)
-
-            state         = next_state
-            day_decisions += 1
             if done:
                 break
 
-            await asyncio.sleep(0)  # Yield to event loop every step (prevents freeze)
+            await asyncio.sleep(0)
 
         if day_decisions > 0:
             m = self._collect_metrics(day_decisions, "DQN", env)
@@ -669,15 +816,13 @@ class SimulationRunner:
 
     def _inject_task_into_env(self, task_data: Dict, env: ProjectEnv):
         try:
-            from environment.task import Task as EnvTask
+            from slingshot.environment.task import Task as EnvTask
             task = EnvTask(
                 task_id=len(env.tasks),
                 priority=int(task_data.get("urgency", 2)),
-                duration_slots=max(1, int(task_data.get("duration", 4))),
+                complexity=int(task_data.get("complexity", 2)),
+                deadline_h=float(task_data.get("deadline_h", 16.0)),
                 arrival_tick=int(task_data.get("arrival_tick", self._tick)),
-                required_skill=float(task_data.get("required_skill", 0.5)),
-                deadline_tick=(int(task_data.get("arrival_tick", self._tick))
-                               + int(task_data.get("duration", 4)) * 3),
             )
             env.tasks.append(task)
         except Exception as e:
@@ -713,7 +858,7 @@ class SimulationRunner:
             if snap["throughput"] > best_tp:
                 best_tp, best_name = snap["throughput"], bn
 
-        best_ms = float(self.cfg.days_phase1 * 8)  # baseline measured over Phase 1
+        best_ms = float(cfg_module.PHASE1_DAYS * 8)
 
         return {
             "best_policy":                best_name,
@@ -734,7 +879,7 @@ class SimulationRunner:
 
     def _save_results(self):
         rdir = cfg_module.RESULTS_DIR
-        for phase_num, rows in [(1, self._phase1_metrics), (2, self._phase2_metrics)]:
+        for phase_num, rows in [(1, list(self._phase1_metrics)), (2, list(self._phase2_metrics))]:
             if not rows:
                 continue
             path = os.path.join(rdir, f"phase{phase_num}_metrics.csv")

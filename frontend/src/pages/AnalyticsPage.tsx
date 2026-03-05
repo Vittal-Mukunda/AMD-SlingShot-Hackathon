@@ -1,58 +1,79 @@
 /**
- * AnalyticsPage.tsx — Post-Simulation Analytics (Module 3)
+ * AnalyticsPage.tsx — Bloomberg-Grade Reporting Dashboard (Redesigned)
  *
- * Triggered automatically when simulation_complete is received.
- * Contains:
- *   - 6 summary cards
- *   - Makespan bar chart (DQN highlighted amber)
- *   - Interactive radar chart (5 axes, click-to-toggle legend)
- *   - Multi-line daily throughput chart
- *   - Grouped lateness rate bar chart per day
- *   - Workers × Days utilization heatmap
- *   - CSV export button
- *   - README generator button
+ * Features:
+ *   - Summary cards with thin policy-colored top border accent, monospace values, trend arrows
+ *   - Makespan bar chart: policy-specific colors, white value label on hover
+ *   - Radar chart: 40% opacity filled polygons, DQN amber rendered on top
+ *   - All chart gridlines: rgba(255,255,255,0.08)
+ *   - Active chart tab animated underline
  */
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, Cell, Legend,
     RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer,
-    LineChart, Line,
+    LineChart, Line, LabelList,
 } from 'recharts';
+import { useShallow } from 'zustand/react/shallow';
 import { useSimulationStore } from '../store/simulationStore';
 import { useAllPolicyMetrics, useDailyThroughputByPolicy, useLatenessPerDay } from '../hooks/useSimulation';
 import { buildRadarData, POLICY_COLORS } from '../types/metrics';
 import type { SummaryCardData } from '../types/metrics';
 import ReadmeGeneratorPanel from '../components/readme/ReadmeGeneratorPanel';
 
-// ── Tooltip ────────────────────────────────────────────────────────────────────
+// ── Tooltip style ──────────────────────────────────────────────────────────────
 const TOOLTIP_STYLE = {
-    background: '#1E2433', border: '1px solid #2A3452',
-    fontSize: 11, fontFamily: 'var(--font-mono)'
+    background: '#0F1629',
+    border: '1px solid rgba(255,255,255,0.1)',
+    fontSize: 11,
+    fontFamily: 'var(--font-mono)',
+    borderRadius: 8,
+    boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
 };
 
-// ── Summary card ───────────────────────────────────────────────────────────────
+// Policy → color mapping with amber for DQN
+const POLICY_COLOR_MAP: Record<string, string> = {
+    DQN: '#F59E0B',
+    Greedy: '#2563EB',
+    Skill: '#06B6D4',
+    FIFO: '#10B981',
+    Hybrid: '#8B5CF6',
+    Random: '#6B7280',
+    ...POLICY_COLORS,
+};
+
+// ── Premium Summary Card ───────────────────────────────────────────────────────
 function SummaryCard({ card }: { card: SummaryCardData }) {
+    const accentColor = card.highlight ? 'var(--color-amber)' : 'var(--color-electric)';
     return (
         <div style={{
-            background: card.highlight ? 'rgba(245,158,11,0.08)' : 'var(--color-panel)',
-            border: `1px solid ${card.highlight ? 'var(--color-amber-dim)' : 'var(--color-border)'}`,
-            borderRadius: 4, padding: '1.25rem',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderTop: `2px solid ${accentColor}`,
+            borderRadius: 'var(--radius-md)',
+            padding: '18px 20px',
             flex: 1, minWidth: 150,
+            transition: 'border-top-color 0.15s ease',
         }}>
-            <div className="font-mono" style={{ fontSize: 9, color: 'var(--color-slate-dim)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>
+            <div className="font-mono" style={{
+                fontSize: 'var(--text-label)', color: 'var(--color-slate-dim)',
+                textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: 10,
+            }}>
                 {card.label}
             </div>
-            <div className="num font-mono" style={{
-                fontSize: '1.5rem', fontWeight: 700,
+            <div className="num" style={{
+                fontFamily: 'var(--font-mono)', fontSize: 'var(--text-card-val)', fontWeight: 700,
                 color: card.highlight ? 'var(--color-amber)' : 'var(--color-text)',
+                lineHeight: 1,
             }}>
                 {card.value}{card.unit}
             </div>
             {card.delta && (
-                <div className="num font-mono" style={{
-                    fontSize: 11, marginTop: 6,
-                    color: card.deltaPositive ? 'var(--color-success)' : 'var(--color-danger)'
+                <div className="num" style={{
+                    fontSize: 12, marginTop: 8, fontFamily: 'var(--font-mono)',
+                    color: card.deltaPositive ? 'var(--color-success)' : 'var(--color-danger)',
+                    display: 'flex', alignItems: 'center', gap: 4,
                 }}>
                     {card.deltaPositive ? '▲' : '▼'} {card.delta}
                 </div>
@@ -61,28 +82,24 @@ function SummaryCard({ card }: { card: SummaryCardData }) {
     );
 }
 
-// ── Utilization Heatmap (SVG) ─────────────────────────────────────────────────
+// ── Utilization Heatmap ───────────────────────────────────────────────────────
 function UtilizationHeatmap({ data }: { data: { worker: string; day: number; utilization: number }[] }) {
     const [hoveredCell, setHoveredCell] = useState<{ worker: string; day: number; val: number } | null>(null);
-
     const workers = [...new Set(data.map(d => d.worker))].sort();
     const days = [...new Set(data.map(d => d.day))].sort((a, b) => a - b);
-
-    const CELL_W = 22, CELL_H = 28;
-    const LABEL_W = 40, HEADER_H = 30;
+    const CELL_W = 22, CELL_H = 28, LABEL_W = 40, HEADER_H = 30;
 
     function utilColor(u: number): string {
         if (u >= 0.9) return '#EF4444';
         if (u >= 0.75) return '#F97316';
         if (u >= 0.5) return '#F59E0B';
-        if (u >= 0.25) return '#22C55E';
-        return '#1E2433';
+        if (u >= 0.25) return '#10B981';
+        return 'rgba(255,255,255,0.04)';
     }
 
     return (
         <div style={{ overflowX: 'auto', position: 'relative' }}>
             <svg width={LABEL_W + days.length * CELL_W} height={HEADER_H + workers.length * CELL_H}>
-                {/* Day headers */}
                 {days.map((day, di) => (
                     <text key={day} x={LABEL_W + di * CELL_W + CELL_W / 2} y={18}
                         textAnchor="middle" fill="var(--color-slate-dim)"
@@ -90,8 +107,6 @@ function UtilizationHeatmap({ data }: { data: { worker: string; day: number; uti
                         {day}
                     </text>
                 ))}
-
-                {/* Worker rows */}
                 {workers.map((worker, wi) => (
                     <g key={worker}>
                         <text x={LABEL_W - 4} y={HEADER_H + wi * CELL_H + CELL_H / 2 + 4}
@@ -104,10 +119,9 @@ function UtilizationHeatmap({ data }: { data: { worker: string; day: number; uti
                             const u = entry?.utilization ?? 0;
                             return (
                                 <rect key={day}
-                                    x={LABEL_W + di * CELL_W + 1}
-                                    y={HEADER_H + wi * CELL_H + 1}
+                                    x={LABEL_W + di * CELL_W + 1} y={HEADER_H + wi * CELL_H + 1}
                                     width={CELL_W - 2} height={CELL_H - 2}
-                                    fill={utilColor(u)} rx={2}
+                                    fill={utilColor(u)} rx={3}
                                     className="heatmap-cell"
                                     onMouseEnter={() => setHoveredCell({ worker, day, val: u })}
                                     onMouseLeave={() => setHoveredCell(null)}
@@ -117,25 +131,22 @@ function UtilizationHeatmap({ data }: { data: { worker: string; day: number; uti
                     </g>
                 ))}
             </svg>
-
             {hoveredCell && (
                 <div className="tooltip" style={{ left: 8, top: -40 }}>
                     {hoveredCell.worker} · Day {hoveredCell.day} · {(hoveredCell.val * 100).toFixed(0)}% utilization
                 </div>
             )}
-
-            {/* Legend */}
-            <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 12, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 {[
-                    { label: '<25%', color: '#1E2433' },
-                    { label: '25–50%', color: '#22C55E' },
+                    { label: '<25%', color: 'rgba(255,255,255,0.06)' },
+                    { label: '25–50%', color: '#10B981' },
                     { label: '50–75%', color: '#F59E0B' },
                     { label: '75–90%', color: '#F97316' },
                     { label: '90%+', color: '#EF4444' },
                 ].map(({ label, color }) => (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <div style={{ width: 12, height: 12, background: color, borderRadius: 2, border: '1px solid rgba(255,255,255,0.1)' }} />
-                        <span className="font-mono" style={{ fontSize: 9, color: 'var(--color-slate-text)' }}>{label}</span>
+                        <span className="font-mono" style={{ fontSize: 10, color: 'var(--color-slate-text)' }}>{label}</span>
                     </div>
                 ))}
             </div>
@@ -143,54 +154,79 @@ function UtilizationHeatmap({ data }: { data: { worker: string; day: number; uti
     );
 }
 
+// ── Chart Section Card ────────────────────────────────────────────────────────
+function ChartCard({ title, children, style }: {
+    title: string; children: React.ReactNode; style?: React.CSSProperties;
+}) {
+    return (
+        <div style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 'var(--pad-card)',
+            ...style,
+        }}>
+            <div className="section-header">{title}</div>
+            {children}
+        </div>
+    );
+}
+
 // ── Main AnalyticsPage ─────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
     const navigate = useNavigate();
-    const { finalMetrics, baselineResults, simConfig } = useSimulationStore();
+    const { finalMetrics, baselineResults, simConfig, dailyMetricsHistory } = useSimulationStore(
+        useShallow(s => ({
+            finalMetrics: s.finalMetrics,
+            baselineResults: s.baselineResults,
+            simConfig: s.simConfig,
+            dailyMetricsHistory: s.dailyMetricsHistory,
+        }))
+    );
+
     const [hiddenPolicies, setHiddenPolicies] = useState<Set<string>>(new Set());
+    const [activeTab, setActiveTab] = useState<'makespan' | 'radar' | 'throughput' | 'lateness'>('makespan');
     const [showReadme, setShowReadme] = useState(false);
 
     const allMetrics = useAllPolicyMetrics();
     const dailyThroughput = useDailyThroughputByPolicy();
     const latenessPerDay = useLatenessPerDay();
 
-    // Heatmap: real per-worker utilization from dailyMetricsHistory
     const heatmapData = useMemo(() => {
-        const { dailyMetricsHistory } = useSimulationStore.getState();
         const result: { worker: string; day: number; utilization: number }[] = [];
         const numWorkers = simConfig?.num_workers ?? 5;
-
-        // Group rows by day
         const byDay: Record<number, { loadBalance: number }[]> = {};
         dailyMetricsHistory.forEach(row => {
             if (!byDay[row.day]) byDay[row.day] = [];
             byDay[row.day].push({ loadBalance: row.load_balance });
         });
-
-        // Generate per-worker utilization from load_balance std-dev
         Object.entries(byDay).forEach(([dayStr, rows]) => {
             const day = Number(dayStr);
-            // Distribute throughput across workers inversely weighted by load balance
-            const avgLoadBalance = rows.reduce((s, r) => s + r.loadBalance, 0) / rows.length;
+            const avgLB = rows.reduce((s, r) => s + r.loadBalance, 0) / rows.length;
             for (let w = 0; w < numWorkers; w++) {
-                // Vary per worker around the load balance signal
-                const jitter = (w - numWorkers / 2) / numWorkers * avgLoadBalance * 0.2;
-                const util = Math.min(1, Math.max(0, 0.5 + jitter + (1 - avgLoadBalance) * 0.4));
-                result.push({ worker: `W${w + 1}`, day, utilization: util });
+                const jitter = (w - numWorkers / 2) / numWorkers * avgLB * 0.2;
+                result.push({ worker: `W${w + 1}`, day, utilization: Math.min(1, Math.max(0, 0.5 + jitter + (1 - avgLB) * 0.4)) });
             }
         });
-
         return result;
-    }, [allMetrics]);
+    }, [dailyMetricsHistory, simConfig]);
 
     if (!finalMetrics) {
         return (
-            <div className="grid-bg" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div className="card" style={{ padding: '3rem', textAlign: 'center' }}>
-                    <div className="font-mono" style={{ color: 'var(--color-amber)', fontSize: 14, marginBottom: 16 }}>
+            <div className="grid-bg page-enter" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-lg)',
+                    padding: '48px',
+                    textAlign: 'center',
+                    maxWidth: 400,
+                }}>
+                    <div style={{ fontSize: 48, marginBottom: 20 }}>📊</div>
+                    <div className="font-mono" style={{ color: 'var(--color-cyan)', fontSize: 'var(--text-label)', marginBottom: 12, letterSpacing: '0.15em' }}>
                         AWAITING SIMULATION
                     </div>
-                    <p style={{ color: 'var(--color-slate-text)', marginBottom: 24 }}>
+                    <p style={{ color: 'var(--color-slate-text)', marginBottom: 28, fontSize: 'var(--text-body)' }}>
                         Complete a simulation run to see analytics.
                     </p>
                     <button className="btn-primary" onClick={() => navigate('/')}>
@@ -201,13 +237,9 @@ export default function AnalyticsPage() {
         );
     }
 
-    // ── Summary cards ──────────────────────────────────────────────────────────
-    const summaryCards: SummaryCardData[] = [
-        {
-            label: 'Best Baseline Policy',
-            value: finalMetrics.best_policy,
-            highlight: true,
-        },
+    // ── Memoized data ─────────────────────────────────────────────────────────
+    const summaryCards = useMemo<SummaryCardData[]>(() => [
+        { label: 'Best Baseline Policy', value: finalMetrics.best_policy, highlight: true },
         {
             label: 'DQN vs Best Δ Makespan',
             value: finalMetrics.dqn_vs_best_makespan_delta > 0
@@ -217,33 +249,41 @@ export default function AnalyticsPage() {
             delta: `${Math.abs(finalMetrics.dqn_vs_best_makespan_delta).toFixed(1)}h`,
             deltaPositive: finalMetrics.dqn_vs_best_makespan_delta < 0,
         },
-        {
-            label: 'Total Tasks Completed',
-            value: finalMetrics.total_tasks_completed.toLocaleString(),
-        },
-        {
-            label: 'Overall Lateness Rate',
-            value: `${(finalMetrics.overall_lateness_rate * 100).toFixed(1)}`,
-            unit: '%',
-        },
-        {
-            label: 'Peak Overload Events',
-            value: finalMetrics.peak_overload_events,
-        },
-        {
-            label: 'Avg Quality Score',
-            value: finalMetrics.avg_quality_score.toFixed(3),
-        },
-    ];
+        { label: 'Total Tasks Completed', value: finalMetrics.total_tasks_completed.toLocaleString() },
+        { label: 'Overall Lateness Rate', value: `${(finalMetrics.overall_lateness_rate * 100).toFixed(1)}`, unit: '%' },
+        { label: 'Peak Overload Events', value: String(finalMetrics.peak_overload_events) },
+        { label: 'Avg Quality Score', value: finalMetrics.avg_quality_score.toFixed(3) },
+    ], [finalMetrics]);
 
-    // ── Makespan bar data ──────────────────────────────────────────────────────
-    const makespanData = Object.entries(allMetrics).map(([name, m]) => ({
-        name,
-        makespan: m.makespan_hours ?? (m.throughput > 0 ? 200 / m.throughput * 8 : 200),
-    })).sort((a, b) => a.makespan - b.makespan);
+    const makespanData = useMemo(() =>
+        Object.entries(allMetrics).map(([name, m]) => ({
+            name,
+            makespan: (m as any).makespan_hours ?? (m.throughput > 0 ? 200 / m.throughput * 8 : 200),
+        })).sort((a, b) => a.makespan - b.makespan)
+        , [allMetrics]);
 
-    // ── Radar data ─────────────────────────────────────────────────────────────
-    const radarData = buildRadarData(allMetrics);
+    const radarData = useMemo(() => buildRadarData(allMetrics), [allMetrics]);
+    const policyNames = useMemo(() => Object.keys(allMetrics), [allMetrics]);
+    // DQN always last in radar so it renders on top
+    const radarPolicies = useMemo(() => [
+        ...policyNames.filter(n => n !== 'DQN' && !hiddenPolicies.has(n)),
+        ...(policyNames.includes('DQN') && !hiddenPolicies.has('DQN') ? ['DQN'] : []),
+    ], [policyNames, hiddenPolicies]);
+
+    const allDays = useMemo(() => [
+        ...new Set(Object.values(dailyThroughput).flatMap(arr => arr.map(d => d.day)))
+    ].sort((a, b) => a - b), [dailyThroughput]);
+
+    const lineChartData = useMemo(() =>
+        allDays.map(day => {
+            const row: { day: number;[k: string]: number } = { day };
+            Object.entries(dailyThroughput).forEach(([policy, arr]) => {
+                row[policy] = arr.find(d => d.day === day)?.value ?? 0;
+            });
+            return row;
+        })
+        , [allDays, dailyThroughput]);
+
     const togglePolicy = (name: string) =>
         setHiddenPolicies(prev => {
             const next = new Set(prev);
@@ -251,183 +291,200 @@ export default function AnalyticsPage() {
             return next;
         });
 
-    // ── Daily throughput lines ─────────────────────────────────────────────────
-    const allDays = [
-        ...new Set(Object.values(dailyThroughput).flatMap(arr => arr.map(d => d.day)))
-    ].sort((a, b) => a - b);
-
-    const lineChartData = allDays.map(day => {
-        const row: { day: number;[k: string]: number } = { day };
-        Object.entries(dailyThroughput).forEach(([policy, arr]) => {
-            const match = arr.find(d => d.day === day);
-            row[policy] = match?.value ?? 0;
-        });
-        return row;
-    });
-
-    const policyNames = Object.keys(allMetrics);
-
-    const SECTION_STYLE: React.CSSProperties = {
-        background: 'var(--color-panel)', border: '1px solid var(--color-border)',
-        borderRadius: 4, padding: '1.5rem', marginBottom: '1.5rem',
-    };
+    const TABS = [
+        { key: 'makespan', label: 'Makespan' },
+        { key: 'radar', label: 'Performance Radar' },
+        { key: 'throughput', label: 'Daily Throughput' },
+        { key: 'lateness', label: 'Lateness Rate' },
+    ] as const;
 
     return (
-        <div className="grid-bg" style={{ minHeight: '100vh', overflowY: 'auto', padding: '1.5rem' }}>
+        <div className="grid-bg page-enter" style={{ minHeight: '100vh', overflowY: 'auto', padding: '24px 20px' }}>
             <div style={{ maxWidth: 1300, margin: '0 auto' }}>
 
-                {/* Header */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+                {/* ── Header ── */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 32 }}>
                     <div>
-                        <div className="font-mono" style={{ fontSize: 9, color: 'var(--color-amber)', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>
-                            SIMULATION COMPLETE
+                        <div className="font-mono" style={{
+                            fontSize: 'var(--text-label)', color: 'var(--color-success)',
+                            letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 6,
+                        }}>
+                            ✓ SIMULATION COMPLETE
                         </div>
-                        <h1 className="font-display" style={{ fontSize: '1.75rem', fontWeight: 700 }}>
+                        <h1 style={{
+                            fontFamily: 'var(--font-ui)', fontSize: 'var(--text-title)',
+                            fontWeight: 700, color: 'var(--color-text)',
+                            letterSpacing: '-0.02em',
+                        }}>
                             Post-Simulation Analytics
                         </h1>
                     </div>
                     <div style={{ flex: 1 }} />
                     <button className="btn-ghost" onClick={() => navigate('/simulation')} style={{ fontSize: 12 }}>
-                        ← Back to Simulation
+                        ← Simulation
                     </button>
                     <button className="btn-ghost" onClick={() => navigate('/')} style={{ fontSize: 12 }}>
                         New Run
                     </button>
-                    <a
-                        href="/api/export" download="simulation_results.csv"
+                    <a href="/api/export" download="simulation_results.csv"
                         style={{
                             display: 'inline-flex', alignItems: 'center', gap: 6,
-                            padding: '0.5rem 1rem', background: 'transparent',
-                            color: 'var(--color-success)', border: '1px solid var(--color-success)',
-                            borderRadius: 2, fontFamily: 'var(--font-mono)', fontSize: 12,
-                            fontWeight: 600, textDecoration: 'none', letterSpacing: '0.06em'
-                        }}
-                    >
+                            padding: '8px 16px',
+                            background: 'rgba(16,185,129,0.08)',
+                            color: 'var(--color-success)',
+                            border: '1px solid rgba(16,185,129,0.3)',
+                            borderRadius: 'var(--radius-md)',
+                            fontFamily: 'var(--font-ui)', fontSize: 12,
+                            fontWeight: 600, textDecoration: 'none',
+                            transition: 'all 0.15s ease',
+                        }}>
                         ↓ Export CSV
                     </a>
                     <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setShowReadme(p => !p)}>
-                        Generate Documentation
+                        📄 Documentation
                     </button>
                 </div>
 
-                {/* README Panel */}
                 {showReadme && <ReadmeGeneratorPanel onClose={() => setShowReadme(false)} />}
 
                 {/* ── Summary Cards ── */}
-                <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 12, marginBottom: 28, flexWrap: 'wrap' }}>
                     {summaryCards.map((card, i) => <SummaryCard key={i} card={card} />)}
                 </div>
 
-                {/* ── Row 1: Makespan bar + Radar ── */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+                {/* ── Policy filter legend ── */}
+                <div style={{
+                    display: 'flex', gap: 8, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap',
+                }}>
+                    <span className="font-mono" style={{ fontSize: 'var(--text-label)', color: 'var(--color-slate-dim)', letterSpacing: '0.08em' }}>
+                        POLICIES:
+                    </span>
+                    {policyNames.map(name => (
+                        <button key={name} onClick={() => togglePolicy(name)} style={{
+                            padding: '3px 12px',
+                            borderRadius: 100, fontSize: 11,
+                            fontFamily: 'var(--font-mono)', fontWeight: 600,
+                            border: `1px solid ${POLICY_COLOR_MAP[name] ?? '#64748B'}`,
+                            background: hiddenPolicies.has(name) ? 'transparent' : `${POLICY_COLOR_MAP[name] ?? '#64748B'}22`,
+                            color: hiddenPolicies.has(name) ? 'var(--color-slate-dim)' : (POLICY_COLOR_MAP[name] ?? '#64748B'),
+                            cursor: 'pointer', opacity: hiddenPolicies.has(name) ? 0.4 : 1,
+                            transition: 'all 0.15s ease',
+                        }}>
+                            {name === 'DQN' ? '⬡ ' : ''}{name}
+                        </button>
+                    ))}
+                </div>
 
-                    {/* Makespan bar */}
-                    <div style={SECTION_STYLE}>
-                        <div className="section-header">Makespan Comparison</div>
-                        <ResponsiveContainer width="100%" height={280}>
-                            <BarChart data={makespanData} margin={{ top: 0, right: 10, left: 0, bottom: 0 }}>
-                                <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--color-slate-text)', fontFamily: 'var(--font-mono)' }} />
+                {/* ── Chart Tabs ── */}
+                <div style={{
+                    display: 'flex',
+                    borderBottom: '1px solid var(--color-border)',
+                    marginBottom: 20,
+                }}>
+                    {TABS.map(tab => (
+                        <button key={tab.key}
+                            onClick={() => setActiveTab(tab.key)}
+                            className={`chart-tab ${activeTab === tab.key ? 'active' : ''}`}
+                            style={{ fontFamily: 'var(--font-mono)' }}>
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+
+                {/* ── Chart panels ── */}
+                {activeTab === 'makespan' && (
+                    <ChartCard title="Makespan Comparison" style={{ marginBottom: 24 }}>
+                        <ResponsiveContainer width="100%" height={320}>
+                            <BarChart data={makespanData.filter(d => !hiddenPolicies.has(d.name))} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
+                                <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--color-slate-text)', fontFamily: 'var(--font-mono)' }} />
                                 <YAxis tick={{ fontSize: 10, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
-                                <Bar dataKey="makespan" radius={[2, 2, 0, 0]}>
-                                    {makespanData.map(d => (
+                                <RechartsTooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+                                <Bar dataKey="makespan" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                                    <LabelList dataKey="makespan" position="top"
+                                        formatter={(v: any) => typeof v === 'number' ? v.toFixed(1) : v}
+                                        style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fill: 'var(--color-slate-text)' }} />
+                                    {makespanData.filter(d => !hiddenPolicies.has(d.name)).map(d => (
                                         <Cell key={d.name}
-                                            fill={d.name === 'DQN' ? 'var(--color-amber)' : POLICY_COLORS[d.name] ?? '#2A3452'}
-                                            fillOpacity={d.name === 'DQN' ? 1 : 0.7}
+                                            fill={POLICY_COLOR_MAP[d.name] ?? '#2A3452'}
+                                            fillOpacity={d.name === 'DQN' ? 1 : 0.75}
                                         />
                                     ))}
                                 </Bar>
-                                <RechartsTooltip contentStyle={TOOLTIP_STYLE} />
                             </BarChart>
                         </ResponsiveContainer>
-                    </div>
+                    </ChartCard>
+                )}
 
-                    {/* Radar chart */}
-                    <div style={SECTION_STYLE}>
-                        <div className="section-header">Policy Performance Radar</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-                            {policyNames.map(name => (
-                                <button key={name}
-                                    onClick={() => togglePolicy(name)}
-                                    style={{
-                                        padding: '2px 8px', borderRadius: 2, fontSize: 10,
-                                        fontFamily: 'var(--font-mono)', fontWeight: 600,
-                                        border: `1px solid ${POLICY_COLORS[name] ?? '#64748B'}`,
-                                        background: hiddenPolicies.has(name) ? 'transparent' : `${POLICY_COLORS[name] ?? '#64748B'}22`,
-                                        color: hiddenPolicies.has(name) ? 'var(--color-slate-dim)' : (POLICY_COLORS[name] ?? '#64748B'),
-                                        cursor: 'pointer',
-                                        opacity: hiddenPolicies.has(name) ? 0.5 : 1,
-                                    }}>
-                                    {name}
-                                </button>
-                            ))}
-                        </div>
-                        <ResponsiveContainer width="100%" height={230}>
-                            <RadarChart data={radarData}>
-                                <PolarGrid stroke="var(--color-border)" />
-                                <PolarAngleAxis dataKey="axis" tick={{ fill: 'var(--color-slate-text)', fontSize: 10, fontFamily: 'var(--font-mono)' }} />
-                                {policyNames.filter(n => !hiddenPolicies.has(n)).map(name => (
+                {activeTab === 'radar' && (
+                    <ChartCard title="Policy Performance Radar" style={{ marginBottom: 24 }}>
+                        <ResponsiveContainer width="100%" height={360}>
+                            <RadarChart data={radarData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+                                <PolarGrid stroke="rgba(255,255,255,0.08)" />
+                                <PolarAngleAxis dataKey="axis" tick={{ fill: 'var(--color-slate-text)', fontSize: 11, fontFamily: 'var(--font-mono)' }} />
+                                {radarPolicies.map(name => (
                                     <Radar key={name} name={name} dataKey={name}
-                                        stroke={POLICY_COLORS[name] ?? '#64748B'}
-                                        fill={POLICY_COLORS[name] ?? '#64748B'}
-                                        fillOpacity={name === 'DQN' ? 0.25 : 0.1}
+                                        stroke={POLICY_COLOR_MAP[name] ?? '#64748B'}
+                                        fill={POLICY_COLOR_MAP[name] ?? '#64748B'}
+                                        fillOpacity={name === 'DQN' ? 0.40 : 0.15}
                                         strokeWidth={name === 'DQN' ? 2.5 : 1.5}
+                                        isAnimationActive={false}
                                     />
                                 ))}
                                 <RechartsTooltip contentStyle={TOOLTIP_STYLE} />
+                                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)', paddingTop: 16 }} />
                             </RadarChart>
                         </ResponsiveContainer>
-                    </div>
-                </div>
+                    </ChartCard>
+                )}
 
-                {/* ── Row 2: Daily throughput + Lateness per day ── */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
-
-                    {/* Multi-line daily throughput */}
-                    <div style={SECTION_STYLE}>
-                        <div className="section-header">Daily Throughput by Policy</div>
-                        <ResponsiveContainer width="100%" height={250}>
-                            <LineChart data={lineChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                                <XAxis dataKey="day" tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} label={{ value: 'Working Day', position: 'insideBottom', offset: -4, fill: 'var(--color-slate-dim)', fontSize: 9 }} />
-                                <YAxis tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
+                {activeTab === 'throughput' && (
+                    <ChartCard title="Daily Throughput by Policy" style={{ marginBottom: 24 }}>
+                        <ResponsiveContainer width="100%" height={320}>
+                            <LineChart data={lineChartData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}>
+                                <XAxis dataKey="day" tick={{ fontSize: 10, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }}
+                                    label={{ value: 'Working Day', position: 'insideBottom', offset: -10, fill: 'var(--color-slate-dim)', fontSize: 10 }} />
+                                <YAxis tick={{ fontSize: 10, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
                                 <RechartsTooltip contentStyle={TOOLTIP_STYLE} />
-                                <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'var(--font-mono)' }} />
-                                {policyNames.map(name => (
+                                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)' }} />
+                                {policyNames.filter(n => !hiddenPolicies.has(n)).map(name => (
                                     <Line key={name} type="monotone" dataKey={name}
-                                        stroke={POLICY_COLORS[name] ?? '#64748B'}
+                                        stroke={POLICY_COLOR_MAP[name] ?? '#64748B'}
                                         dot={false} strokeWidth={name === 'DQN' ? 2.5 : 1.5}
                                         strokeOpacity={name === 'DQN' ? 1 : 0.7}
+                                        isAnimationActive={false}
                                     />
                                 ))}
                             </LineChart>
                         </ResponsiveContainer>
-                    </div>
+                    </ChartCard>
+                )}
 
-                    {/* Grouped lateness per day */}
-                    <div style={SECTION_STYLE}>
-                        <div className="section-header">Lateness Rate per Day</div>
-                        <ResponsiveContainer width="100%" height={250}>
-                            <BarChart data={latenessPerDay} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                                <XAxis dataKey="day" tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
-                                <YAxis tick={{ fontSize: 9, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                                <RechartsTooltip contentStyle={TOOLTIP_STYLE} />
-                                <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'var(--font-mono)' }} />
-                                {policyNames.map(name => (
+                {activeTab === 'lateness' && (
+                    <ChartCard title="Lateness Rate per Day" style={{ marginBottom: 24 }}>
+                        <ResponsiveContainer width="100%" height={320}>
+                            <BarChart data={latenessPerDay} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}>
+                                <XAxis dataKey="day" tick={{ fontSize: 10, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }} />
+                                <YAxis tick={{ fontSize: 10, fill: 'var(--color-slate-dim)', fontFamily: 'var(--font-mono)' }}
+                                    tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
+                                <RechartsTooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+                                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'var(--font-mono)' }} />
+                                {policyNames.filter(n => !hiddenPolicies.has(n)).map(name => (
                                     <Bar key={name} dataKey={name}
-                                        fill={POLICY_COLORS[name] ?? '#64748B'}
+                                        fill={POLICY_COLOR_MAP[name] ?? '#64748B'}
                                         fillOpacity={name === 'DQN' ? 1 : 0.7}
-                                        radius={[1, 1, 0, 0]}
+                                        radius={[2, 2, 0, 0]}
+                                        isAnimationActive={false}
                                     />
                                 ))}
                             </BarChart>
                         </ResponsiveContainer>
-                    </div>
-                </div>
+                    </ChartCard>
+                )}
 
-                {/* ── Row 3: Utilization heatmap ── */}
-                <div style={{ ...SECTION_STYLE, marginBottom: 0 }}>
-                    <div className="section-header">Worker × Day Utilization Heatmap</div>
+                {/* ── Utilization heatmap ── */}
+                <ChartCard title="Worker × Day Utilization Heatmap" style={{ marginBottom: 0 }}>
                     <UtilizationHeatmap data={heatmapData} />
-                </div>
+                </ChartCard>
             </div>
         </div>
     );

@@ -37,27 +37,38 @@ export interface InjectedTask {
 export interface SimConfig {
     days_phase1: number;
     days_phase2: number;
+    /** Phase 1 observation fraction: 0.40–0.80. Default 0.60 (60% baseline, 40% DQN). */
+    phase1_fraction: number;
+    /** Total simulation days — when set, overrides days_phase1 + days_phase2 via fraction. */
+    sim_days: number;
     worker_mode: WorkerMode;
     worker_seed: number;
     num_workers: number;
+    /** Max concurrent tasks per worker: 3–15. Default 5. */
+    max_worker_load: number;
     manual_workers: ManualWorkerConfig[];
     arrival_distribution: ArrivalDist;
     arrival_params: ArrivalParams;
     task_count: number;
+    tasks_per_day: number;   // v8: fixed daily arrival rate (1-20)
     seed: number;
 }
 
-// Default config values
+// Default config values (100-day run, 60% Phase 1 observation, 40% DQN)
 export const DEFAULT_SIM_CONFIG: SimConfig = {
-    days_phase1: 20,
-    days_phase2: 5,
+    days_phase1: 60,
+    days_phase2: 40,
+    phase1_fraction: 0.60,
+    sim_days: 100,
     worker_mode: 'auto',
     worker_seed: 42,
     num_workers: 5,
+    max_worker_load: 5,
     manual_workers: [],
     arrival_distribution: 'poisson',
-    arrival_params: { rate: 3.5 },
-    task_count: 200,
+    arrival_params: { rate: 4.0 },
+    task_count: 600,
+    tasks_per_day: 4,
     seed: 42,
 };
 
@@ -71,10 +82,10 @@ export function validateSimConfig(cfg: SimConfig): FormErrors {
 
     if (cfg.days_phase1 < 1) errors.days_phase1 = 'Must be at least 1 working day';
     if (cfg.days_phase2 < 1) errors.days_phase2 = 'Must be at least 1 working day';
-    if (cfg.days_phase1 > 60) errors.days_phase1 = 'Phase 1 must not exceed 60 days';
-    if (cfg.days_phase2 > 30) errors.days_phase2 = 'Phase 2 must not exceed 30 days';
+    if (cfg.days_phase1 > 365) errors.days_phase1 = 'Phase 1 must not exceed 365 days';
+    if (cfg.days_phase2 > 365) errors.days_phase2 = 'Phase 2 must not exceed 365 days';
     if (cfg.num_workers < 1 || cfg.num_workers > 25) errors.num_workers = 'Workers must be 1–25';
-    if (cfg.task_count < 10 || cfg.task_count > 500) errors.task_count = 'Tasks must be 10–500';
+    if (cfg.task_count < 10 || cfg.task_count > 2000) errors.task_count = 'Tasks must be 10–2000';
 
     // 8-hour workday hard constraint — users who see this are blocked from submitting
     // (actual enforcement is in config.py SLOTS_PER_DAY = 16, SLOT_HOURS = 0.5)

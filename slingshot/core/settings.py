@@ -19,14 +19,26 @@ class Settings(BaseSettings):
 
     PHASE1_DAYS: int = 20
     PHASE2_DAYS: int = 5
-    
+    SIM_DAYS: int = 25            # v5: unified horizon
+    PHASE1_FRACTION: float = 0.60
+    PHASE2_FRACTION: float = 0.40
+
     @property
     def TOTAL_SIM_DAYS(self) -> int:
-        return self.PHASE1_DAYS + self.PHASE2_DAYS
-        
+        """Total simulation days — alias for SIM_DAYS for backward-compat."""
+        return self.SIM_DAYS
+
     @property
     def EPISODE_HORIZON(self) -> int:
-        return self.TOTAL_SIM_DAYS * self.SLOTS_PER_DAY
+        return self.SIM_DAYS * self.SLOTS_PER_DAY
+
+    # Controlled training / emission intervals (v5)
+    TRAIN_EVERY_N_STEPS: int = 4   # Train DQN once every N env steps
+    EMIT_EVERY_N_TICKS: int  = 8   # Emit tick_update once every N ticks
+
+    # Bounded accumulator caps (v5)
+    MAX_GANTT_BLOCKS_IN_MEMORY: int  = 500
+    MAX_DAILY_METRICS_IN_MEMORY: int = 730
 
     # WORKERS
     NUM_WORKERS: int = 5
@@ -54,18 +66,21 @@ class Settings(BaseSettings):
     FATIGUE_CARRYOVER: float = 0.10
 
     # TASKS
-    TASK_ARRIVAL_RATE: float = 3.5
+    TASK_ARRIVAL_RATE: float = 4.0
     TOTAL_TASKS: int = 200
     NUM_TASKS: int = 200 # Alias
     MIN_TASK_DURATION_H: float = 1.0
     MAX_TASK_DURATION_H: float = 12.0
     TASK_COMPLEXITY_LEVELS: List[int] = [1, 2, 3, 4, 5]
     TASK_PRIORITIES: List[int] = [0, 1, 2, 3]
-    TASK_TYPES: List[int] = [0, 1, 2, 3, 4] # For context switches
+    TASK_TYPES: List[int] = [0, 1, 2, 3, 4]
     CONTEXT_SWITCH_PENALTY: float = 0.2
     TEAM_SYNERGY_ENABLED: bool = True
-    DEADLINE_MIN_H: float = 4.0
-    DEADLINE_MAX_H: float = 40.0
+    # v5: day-based realistic deadline windows (replaces fixed DEADLINE_MIN/MAX_H)
+    DEADLINE_MIN_DAYS: float = 0.5   # Half a working day minimum
+    DEADLINE_MAX_DAYS: float = 3.0   # 3 working days maximum (tighter pressure)
+    DEADLINE_MIN_H: float = 4.0      # Legacy alias (0.5 × 8h)
+    DEADLINE_MAX_H: float = 24.0     # Legacy alias (3 × 8h)
     COMPLETION_TIME_NOISE: float = 0.25
 
     DEPENDENCY_GRAPH_COMPLEXITY: int = 4
@@ -81,21 +96,22 @@ class Settings(BaseSettings):
     ACTIVATION: str = 'relu'
     DUELING_DQN: bool = True
 
-    LEARNING_RATE: float = 0.0003
-    GAMMA: float = 0.97
-    BATCH_SIZE: int = 32
-    REPLAY_BUFFER_SIZE: int = 30000
-    MIN_REPLAY_SIZE: int = 32
-    TARGET_UPDATE_FREQ: int = 100
+    LEARNING_RATE: float = 0.0002
+    GAMMA: float = 0.95
+    BATCH_SIZE: int = 64
+    REPLAY_BUFFER_SIZE: int = 8000        # v9: denser PER sampling
+    REPLAY_BUFFER_MAX_CAPACITY: int = 8000
+    MIN_REPLAY_SIZE: int = 32             # v7: start training earlier
+    TARGET_UPDATE_FREQ: int = 200
 
     EPSILON_START: float = 1.0
     EPSILON_END: float = 0.05
-    EPSILON_DECAY: float = 0.999
-    EPSILON_PHASE2_START: float = 0.35
+    EPSILON_DECAY: float = 0.9998         # v5: slower decay for long runs
+    EPSILON_PHASE2_START: float = 0.4
 
     PER_ALPHA: float = 0.6
     PER_BETA_START: float = 0.4
-    PER_BETA_FRAMES: int = 50000
+    PER_BETA_FRAMES: int = 100000         # v5: larger budget for 365-day runs
 
     LR_SCHEDULER_T0: int = 2000
     LR_SCHEDULER_T_MULT: int = 1
@@ -105,20 +121,33 @@ class Settings(BaseSettings):
     EARLY_STOPPING_PATIENCE: int = 1000
     CONVERGENCE_THRESHOLD: int = 1000
 
-    # REWARD FUNCTION
-    REWARD_COMPLETION_BASE: float = 18.0
-    REWARD_IDLE_PENALTY: float = -0.2
-    REWARD_LATENESS_PENALTY: float = -1.5
-    REWARD_OVERLOAD_WEIGHT: float = -0.5
-    REWARD_URGENCY_PENALTY: float = -0.3
-    REWARD_MAKESPAN_BONUS: float = 50.0
-    REWARD_DELAY_WEIGHT: float = -0.005
-    REWARD_DEADLINE_MISS_PENALTY: float = -20.0
+    # REWARD FUNCTION  (v7: normalized [-2, +1] range)
+    REWARD_COMPLETION_BASE: float = 0.8          # v10: quality^2.5 reward
+    REWARD_IDLE_PENALTY: float = -0.10           # v7: normalized
+    REWARD_LATENESS_PENALTY: float = -0.1
+    REWARD_OVERLOAD_WEIGHT: float = -5.0         # v7: fatal per-worker overload penalty
+    REWARD_URGENCY_PENALTY: float = -0.1         # v7: normalized
+    REWARD_MAKESPAN_BONUS: float = 1.0           # v7: normalized
+    REWARD_DELAY_WEIGHT: float = -0.001
+    REWARD_DEADLINE_MISS_PENALTY: float = -0.5
+    # v7: backlog + terminal penalties (normalized scale)
+    REWARD_BACKLOG_PENALTY: float = -0.02        # v7: scaled for [-2,+1]
+    REWARD_TERMINAL_UNFINISHED_PENALTY: float = -0.5  # v7: per unfinished task
 
     REWARD_THROUGHPUT_WEIGHT: float = 2.0
-    REWARD_STRATEGIC_DEFER: float = 0.5
+    REWARD_STRATEGIC_DEFER: float = 0.3
     REWARD_EXPLORATION_BONUS: float = 0.3
     FATIGUE_QUALITY_PENALTY: float = 0.25
+
+    REWARD_SKILL_MATCH_WEIGHT: float = 0.3       # v7: quality bonus
+    REWARD_FATIGUE_ASSIGN_PENALTY: float = -0.2
+    REWARD_OVERLOAD_ASSIGN_PENALTY: float = -5.0  # v7: hard overload block
+    REWARD_OVERLOAD_IMMEDIATE: float = -5.0       # v7: immediate overload penalty
+    REWARD_LOAD_BALANCE_BONUS: float = 0.1
+    REWARD_IDLE_WAITING_PENALTY: float = -0.05
+
+    REWARD_CLIP_MIN: float = -2.0    # v7: normalized reward range
+    REWARD_CLIP_MAX: float =  1.0
 
     # BASELINE CONFIGURATION
     BASELINE_SKILL_ESTIMATION_EPISODES: int = 10

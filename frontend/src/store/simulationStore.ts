@@ -227,7 +227,8 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
     applyDailySummary: (payload) =>
         set((state) => {
             const newEntries = Object.values(payload.metrics_per_policy);
-            return { dailyMetricsHistory: [...state.dailyMetricsHistory, ...newEntries] };
+            const MAX_DAILY = 730;
+            return { dailyMetricsHistory: [...state.dailyMetricsHistory, ...newEntries].slice(-MAX_DAILY) };
         }),
 
     applySimulationComplete: (payload) =>
@@ -251,11 +252,13 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
 
     addGanttBlock: (block) =>
         set((state) => {
+            const MAX_GANTT_PER_POLICY = 400;
             const existing = state.ganttBlocks[block.policy] ?? [];
+            const trimmed = [...existing, block].slice(-MAX_GANTT_PER_POLICY);
             return {
                 ganttBlocks: {
                     ...state.ganttBlocks,
-                    [block.policy]: [...existing, block],
+                    [block.policy]: trimmed,
                 },
             };
         }),

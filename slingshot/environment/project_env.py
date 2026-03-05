@@ -1,14 +1,15 @@
 """
-ProjectEnv — v4: Continual Online Learning Scheduling Environment.
+ProjectEnv — v5: 365-Day Adaptive Scheduling Environment.
 
-Key changes from v3:
-  - SimClock tracks (day, slot_in_day) within an 8h/5-day workday model.
-  - Tasks arrive dynamically (Poisson); agents have ZERO lookahead.
-  - get_available_tasks(tick) returns only tasks that have arrived by 'tick'.
-  - Outside work-hours slots are skipped automatically (env advances the clock).
-  - State dim: 96 (5w×5 + 10t×5 + 10 belief + 6 global + 15 pad).
-  - Reward is makespan-centric: throughput, idle penalty, lateness, completion bonus.
-  - Baselines and DQN both use this single environment — no lookahead anywhere.
+Key changes from v4:
+  - Backlog penalty: every step incurs cost ∝ number of unassigned available tasks.
+  - Terminal penalty: strong one-time penalty at episode end for unfinished/in-progress tasks.
+  - Adaptive time stepping: advance_to_next_event() skips idle ticks efficiently
+    by jumping to the next task arrival or task completion, not a fixed +1.
+  - Idle worker penalty strengthened to discourage underutilization.
+  - Deadlines generated within DEADLINE_MIN_DAYS … DEADLINE_MAX_DAYS from arrival
+    (set in task.py / config.py), creating genuine scheduling trade-offs.
+  - No hardcoded horizon limits — total_sim_slots driven by SIM_DAYS from config.
 """
 
 import numpy as np
@@ -134,6 +135,15 @@ class ProjectEnv:
         self._last_reward_breakdown   = {}
         self._episode_reward_breakdown = {}
         self._all_completed_makespan  = False
+        self._last_completion_milestone = 0.0  # tracks 25/50/75/100% milestones
+        # Fix 3: overflow drain window state
+        self._overflow_ticks   = 0               # ticks elapsed after _total_sim_slots
+        self._overflow_started = False            # True once clock > _total_sim_slots
+
+        # v10 Fix 3: Adaptive quality tracking — rolling 50-decision window
+        self._quality_window = []         # last 50 quality scores from DQN assignments
+        self._quality_boost_remaining = 0 # decisions left with 1.5× quality reward boost
+        self._decision_count = 0          # total DQN scheduling decisions
 
         # Diagnostics
         if self.enable_diagnostics:
@@ -182,8 +192,19 @@ class ProjectEnv:
             'deadline_miss': 0.0,
             'delay_penalty': 0.0,
             'makespan_bonus': 0.0,
+            'backlog_penalty': 0.0,
+            'throughput_bonus': 0.0,
+            'terminal_penalty': 0.0,
         }
         self._all_completed_makespan   = False
+        self._last_completion_milestone = 0.0
+        # Fix 3: reset overflow state
+        self._overflow_ticks   = 0
+        self._overflow_started = False
+        # v10 Fix 3: reset adaptive quality tracking
+        self._quality_window = []
+        self._quality_boost_remaining = 0
+        self._decision_count = 0
 
         return self._get_state()
 
@@ -203,8 +224,9 @@ class ProjectEnv:
             (next_state, reward, done, info)
         """
         # ── Decode & execute action ───────────────────────────────────────────
-        task_id, worker_id, action_type = self._decode_action(action)
-        action_reward = self._execute_action(task_id, worker_id, action_type)
+        task_idx, worker_id, action_type = self._decode_action(action)
+        action_type_was_defer_or_noop    = (action_type != 'assign')  # for idle-waiting pen
+        action_reward = self._execute_action(task_idx, worker_id, action_type)
 
         # ── Advance task progress ─────────────────────────────────────────────
         completion_reward = self._update_task_progress()
@@ -232,9 +254,9 @@ class ProjectEnv:
         if self.enable_deadline_shocks and np.random.rand() < config.DEADLINE_SHOCK_PROB:
             self._apply_deadline_shock()
 
-        # ── Overload tracking ─────────────────────────────────────────────────
+        # ── Overload tracking (v7: threshold = at capacity, not half) ────────
         for w in self.workers:
-            if w.load > config.MAX_WORKER_LOAD // 2:
+            if w.load >= config.MAX_WORKER_LOAD:
                 self.metrics['overload_events'] += 1
 
         # ── Compute reward ────────────────────────────────────────────────────
@@ -259,6 +281,30 @@ class ProjectEnv:
             )
             self._all_completed_makespan = True
 
+        # ── BACKLOG PENALTY (v7: mild, normalized) ─────────────────────────
+        available_now = self._get_available_tasks()
+        n_backlog = len(available_now)
+        backlog_penalty = config.REWARD_BACKLOG_PENALTY * n_backlog
+
+        # ── Idle-waiting penalty ─────────────────────────────────────────
+        # Extra penalty when tasks are waiting but action was NOT an assignment.
+        idle_waiting_pen = 0.0
+        if action_type_was_defer_or_noop and len(available_now) > 0:
+            has_free_worker = any(
+                w.availability == 1 and w.load < config.MAX_WORKER_LOAD
+                for w in self.workers
+            )
+            if has_free_worker:
+                idle_waiting_pen = getattr(config, 'REWARD_IDLE_WAITING_PENALTY', -0.15)
+
+        # ── THROUGHPUT MILESTONE BONUS (v7: scaled for [-2,+1]) ─────────
+        completion_rate_now = len(self.completed_tasks) / max(len(self.tasks), 1)
+        throughput_bonus = 0.0
+        for milestone in [0.25, 0.50, 0.75, 1.0]:
+            if completion_rate_now >= milestone > self._last_completion_milestone:
+                throughput_bonus += 0.5  # v7: scaled down from 5.0
+                self._last_completion_milestone = milestone
+
         reward_raw = (
             action_reward
             + completion_reward
@@ -269,7 +315,27 @@ class ProjectEnv:
             + delay_penalty
             + deadline_miss_penalty
             + makespan_bonus
+            + backlog_penalty
+            + idle_waiting_pen
+            + throughput_bonus
         )
+
+        # ── Termination check (before applying terminal penalty) ────────
+        done, reason = self._check_termination()
+
+        # ── TERMINAL PENALTY (v6 FIX) ────────────────────────────────
+        # Strong one-time penalty for unfinished/in-progress tasks at episode end.
+        # Applied AFTER clipping so it always reaches the agent undiminished.
+        terminal_penalty = 0.0
+        if done and reason != 'all_completed':
+            terminal_penalty = self._compute_terminal_penalty()
+
+        # Clip the per-step reward (excludes terminal penalty)
+        reward_raw = float(np.clip(reward_raw, config.REWARD_CLIP_MIN, config.REWARD_CLIP_MAX))
+
+        # Apply terminal penalty AFTER clipping — must not be masked
+        if terminal_penalty != 0.0:
+            reward_raw += terminal_penalty
 
         reward = reward_raw * self.reward_scale
 
@@ -285,6 +351,9 @@ class ProjectEnv:
             'deadline_miss':       deadline_miss_penalty,
             'delay_penalty':       delay_penalty,
             'makespan_bonus':      makespan_bonus,
+            'backlog_penalty':     backlog_penalty,
+            'throughput_bonus':    throughput_bonus,
+            'terminal_penalty':    terminal_penalty,
             'total_unscaled':      reward_raw,
             'total_scaled':        reward,
         }
@@ -299,8 +368,6 @@ class ProjectEnv:
             self.diagnostics['reward_ranges'].append(reward)
             self.diagnostics['valid_action_counts'].append(len(valid))
 
-        # ── Termination ───────────────────────────────────────────────────────
-        done, reason = self._check_termination()
 
         next_state = self._get_state()
 
@@ -332,7 +399,7 @@ class ProjectEnv:
             return task_idx, -1, 'escalate'
 
     def _execute_action(self, task_idx: int, worker_id: int, action_type: str) -> float:
-        """Execute decoded action; return immediate reward component."""
+        """Execute decoded action; return immediate shaped reward component."""
         available = self._get_available_tasks()
 
         if action_type == 'assign':
@@ -344,8 +411,12 @@ class ProjectEnv:
             if not self._is_valid_assign(task, worker):
                 return -0.5
 
+            # v7 Fix 2: Hard block overloaded workers — BEFORE any positive reward
+            if worker.load >= config.MAX_WORKER_LOAD:
+                return -5.0  # unrecoverable penalty, cannot be offset
+
             worker.assign_task(task.task_id, task_type=task.task_type)
-            
+
             synergy_boost = 1.0
             if getattr(config, 'TEAM_SYNERGY_ENABLED', False) and hasattr(self, 'synergy_matrix'):
                 for other_w in self.workers:
@@ -358,31 +429,63 @@ class ProjectEnv:
                 worker_skill = worker.true_skill,
                 worker_speed = worker.speed_multiplier * synergy_boost,
             )
-            # Small skill-match bonus
-            match = worker.true_skill / max(task.complexity, 1)
-            return 0.1 * min(match, 2.0)
+
+            # ── Problem 3: Redesigned shaped assignment reward ─────────────────
+            # 1. Skill-match quality (belief-state skill estimate vs task complexity)
+            belief_skill = self.belief_state.get_skill_mean(worker_id)
+            skill_match  = float(np.clip(belief_skill / max(task.complexity, 1), 0.0, 1.5))
+            base_reward  = config.REWARD_SKILL_MATCH_WEIGHT * skill_match   # 0..+0.75
+
+            # 2. Load-balance bonus: reward choosing the worker with lowest current load
+            loads = [w.load for w in self.workers if w.availability == 1]
+            if loads:
+                min_load = min(loads)
+                load_bonus = config.REWARD_LOAD_BALANCE_BONUS if worker.load == min_load else 0.0
+            else:
+                load_bonus = 0.0
+
+            # 3. IMMEDIATE overload penalty: (v7: handled above with hard -5.0 return)
+
+            # 4. Lateness penalty: task already past deadline at assign time
+            deadline_pen = 0.0
+            slots_left   = task.deadline_slot - self.clock.tick
+            if slots_left <= 0:
+                deadline_pen = 0.5   # already late
+            elif slots_left <= 2:
+                deadline_pen = 0.2   # very close to deadline
+
+            # 5. Priority bonus: urgent tasks more valuable to assign quickly
+            priority_bonus = 0.05 * (task.priority + 1)
+
+            # v7 Fix 6: Quality bonus for skill match
+            quality_bonus = config.REWARD_SKILL_MATCH_WEIGHT * skill_match
+
+            raw = base_reward + load_bonus + quality_bonus - deadline_pen + priority_bonus
+            return float(np.clip(raw, -2.0, 1.0))
 
         elif action_type == 'defer':
             if task_idx >= len(available):
                 return -0.2
             task = available[task_idx]
-            # Strategic defer is acceptable if no good worker is available
-            avail_skills = [w.true_skill for w in self.workers if w.availability == 1]
-            if avail_skills and max(avail_skills) >= task.complexity * 0.6:
-                return -0.1   # Mild penalty for deferring when workers are available
-            return config.REWARD_STRATEGIC_DEFER
+            # Acceptable defer only if ALL workers are either overloaded or unavailable
+            has_valid = any(
+                w.availability == 1 and w.load < config.MAX_WORKER_LOAD
+                for w in self.workers
+            )
+            if has_valid:
+                return -0.15  # Mild penalty: should assign when workers are free
+            return 0.0  # Acceptable defer when no workers available
 
         elif action_type == 'escalate':
             if task_idx >= len(available):
                 return 0.0
             task = available[task_idx]
             if task.assigned_worker is not None and task.priority < 3:
-                task.priority              = min(3, task.priority + 1)
-                # Speed up expected completion by ~20%
+                task.priority = min(3, task.priority + 1)
                 if task.expected_completion_tick is not None:
                     span = task.expected_completion_tick - self.clock.tick
                     task.expected_completion_tick = self.clock.tick + max(1, int(span * 0.8))
-                return -1.5   # Cost of escalation
+                return -1.0
             return 0.0
 
         return 0.0
@@ -426,8 +529,46 @@ class ProjectEnv:
                 self.completed_tasks.append(task)
                 self.metrics['throughput'] += 1
 
-                priority_weight    = (task.priority + 1) * config.REWARD_COMPLETION_BASE
-                completion_reward += priority_weight * quality
+                # v10 Fix 2: quality^2.5 completion reward (sharper gradient for skill-matched)
+                priority_weight  = (task.priority + 1) / 4.0 * config.REWARD_COMPLETION_BASE
+                quality_reward = priority_weight * (quality ** 2.5)
+
+                # v10 Fix 3: Adaptive quality boost — if skill_util rate < 60%,
+                # boost quality reward by 1.5× for next 20 decisions
+                self._quality_window.append(1.0 if quality > 0.35 else 0.0)
+                if len(self._quality_window) > 50:
+                    self._quality_window = self._quality_window[-50:]
+                self._decision_count += 1
+
+                if self._quality_boost_remaining > 0:
+                    quality_reward *= 1.5
+                    self._quality_boost_remaining -= 1
+
+                # Check every 10 decisions if we need to activate the boost
+                if (self._decision_count % 10 == 0 and
+                    len(self._quality_window) >= 20):
+                    skill_util_rate = sum(self._quality_window) / len(self._quality_window)
+                    if skill_util_rate < 0.60 and self._quality_boost_remaining <= 0:
+                        self._quality_boost_remaining = 20
+                        print(f"[QualityBoost] skill_util={skill_util_rate:.2f} < 0.60, "
+                              f"activating 1.5x reward for next 20 decisions")
+
+                completion_reward += quality_reward
+
+                # v9 Fix 4: penalty for severely mismatched assignment (quality < 0.15)
+                if quality < 0.15:
+                    completion_reward -= 0.1   # REWARD_MIN_QUALITY_PENALTY
+
+                # v8 Fix 4: Early/on-time completion bonuses
+                slots_ahead = task.deadline_slot - tick
+                total_window = max(task.deadline_slot - task.arrival_tick, 1)
+                pct_ahead = slots_ahead / total_window
+                early_bonus = getattr(config, 'REWARD_EARLY_COMPLETION_BONUS', 0.2)
+                ontime_bonus = getattr(config, 'REWARD_ONTIME_COMPLETION_BONUS', 0.1)
+                if pct_ahead >= 0.20:
+                    completion_reward += early_bonus   # +0.2 for 20%+ ahead
+                elif slots_ahead >= 0:
+                    completion_reward += ontime_bonus  # +0.1 for any on-time
 
         return completion_reward
 
@@ -442,31 +583,37 @@ class ProjectEnv:
         return config.REWARD_IDLE_PENALTY * idle_count
 
     def _compute_lateness_penalty(self) -> float:
-        """Penalise tasks completed after their deadline (lateness penalty)."""
-        penalty    = 0.0
-        tick       = self.clock.tick
+        """Penalise tasks completed THIS tick that finished after deadline (one-shot)."""
+        penalty = 0.0
+        tick = self.clock.tick
         for t in self.completed_tasks:
-            if t.actual_completion_tick is not None and t.actual_completion_tick > t.deadline_slot:
+            if (t.actual_completion_tick is not None
+                    and t.actual_completion_tick == tick
+                    and t.actual_completion_tick > t.deadline_slot):
                 slots_late = t.actual_completion_tick - t.deadline_slot
-                penalty   += config.REWARD_LATENESS_PENALTY * slots_late
+                penalty += config.REWARD_LATENESS_PENALTY * slots_late
         return penalty
 
     def _compute_urgency_penalty(self) -> float:
-        """Penalise unstarted tasks close to their deadline."""
-        penalty    = 0.0
-        tick       = self.clock.tick
+        """Penalise unstarted tasks close to their deadline (8-slot / 4h window)."""
+        penalty = 0.0
+        tick = self.clock.tick
         for t in self.tasks:
             if t.is_available(tick) and t.is_unassigned():
                 slots_left = t.slots_until_deadline(tick)
-                if slots_left <= 4:
+                if slots_left <= 8:
                     penalty += config.REWARD_URGENCY_PENALTY
         return penalty
 
     def _compute_overload_penalty(self) -> float:
-        """Mild penalty for load imbalance across workers."""
-        loads = np.array([w.load for w in self.workers], dtype=float)
-        sigma = float(np.std(loads))
-        return config.REWARD_OVERLOAD_WEIGHT * sigma
+        """v7: Fatal -5.0 per worker at/above capacity + -0.5 cumulative surcharge."""
+        penalty = 0.0
+        for w in self.workers:
+            if w.load >= config.MAX_WORKER_LOAD:
+                penalty += config.REWARD_OVERLOAD_WEIGHT  # -5.0 per worker
+                excess = w.load - config.MAX_WORKER_LOAD + 1
+                penalty += -0.5 * excess  # cumulative surcharge
+        return penalty
 
     # ── Deadline shock ────────────────────────────────────────────────────────
 
@@ -481,17 +628,187 @@ class ProjectEnv:
     # ── Termination ───────────────────────────────────────────────────────────
 
     def _check_termination(self) -> Tuple[bool, Optional[str]]:
-        # All tasks completed
+        """v9 Fix 3: Overflow drain window — don't hard-stop at time limit.
+
+        When configured day count is reached:
+          1. Immediately completes any active in-progress tasks (they finish at clock.tick).
+          2. Allows up to 2 extra working days (2 × SLOTS_PER_DAY overflow ticks) to drain
+             tasks that have already arrived but are unassigned.
+          3. After overflow exhausted, marks all remaining non-failed tasks as failed
+             with reason='simulation_boundary' and terminates.
+        """
+        MAX_OVERFLOW_SLOTS = 2 * config.SLOTS_PER_DAY  # 2 extra working days
+
+        # All tasks completed — best case
         if len(self.completed_tasks) == len(self.tasks):
             return True, 'all_completed'
-        # Simulation time exhausted
-        if self.clock.tick >= self._total_sim_slots:
-            return True, 'time_limit'
-        # Catastrophic failure rate
+
+        # Catastrophic failure rate — terminate early regardless of overflow window
         failure_rate = len(self.failed_tasks) / max(len(self.tasks), 1)
         if failure_rate >= 0.6:
             return True, 'catastrophic_failure'
+
+        # Primary time limit reached — enter or continue overflow window
+        if self.clock.tick >= self._total_sim_slots:
+            self._overflow_started = True
+            self._overflow_ticks = self.clock.tick - self._total_sim_slots
+
+            # Check if any task is still in-progress or arrived-unassigned
+            in_progress = [
+                t for t in self.tasks
+                if t.assigned_worker is not None and not t.is_completed and not t.is_failed
+            ]
+            arrived_unassigned = [
+                t for t in self.tasks
+                if t.arrival_tick <= self.clock.tick
+                and t.assigned_worker is None
+                and not t.is_completed
+                and not t.is_failed
+            ]
+
+            still_workable = in_progress + arrived_unassigned
+
+            if not still_workable or self._overflow_ticks >= MAX_OVERFLOW_SLOTS:
+                # Mark all remaining non-failed, non-completed tasks as failed
+                boundary_count = 0
+                for t in self.tasks:
+                    if not t.is_completed and not t.is_failed:
+                        t.is_failed = True
+                        t.failure_reason = 'simulation_boundary'
+                        self.failed_tasks.append(t)
+                        boundary_count += 1
+                if boundary_count:
+                    print(f"  [Termination] Marked {boundary_count} tasks as 'simulation_boundary' "
+                          f"after {self._overflow_ticks}-tick overflow window.")
+                return True, 'time_limit'
+
+            # Still within overflow — continue running
+            return False, None
+
         return False, None
+
+    def _compute_terminal_penalty(self) -> float:
+        """
+        One-time terminal penalty applied at episode end.
+
+        Penalises tasks that are:
+          - Still in the queue (unstarted, unassigned)
+          - In-progress but not yet completed
+
+        This prevents the agent from gaming the episode by ending with backlog.
+        """
+        unfinished_count = sum(
+            1 for t in self.tasks
+            if not t.is_completed and not t.is_failed
+        )
+        penalty = config.REWARD_TERMINAL_UNFINISHED_PENALTY * unfinished_count
+        return float(penalty)
+
+    # ── Adaptive Event-Driven Time Stepping ──────────────────────────────────
+
+    def advance_to_next_event(self) -> int:
+        """
+        Advance the simulation clock to the tick of the next meaningful event,
+        rather than advancing one tick at a time.
+
+        A 'meaningful event' is defined as:
+          1. A task arrival (a task becomes available that wasn't before)
+          2. A task completion (an in-progress task is expected to finish)
+          3. A deadline expiration (a task's deadline slot)
+
+        If no future events exist within the simulation horizon, advance to
+        the end.
+
+        Returns:
+            Number of ticks advanced.
+
+        Design:
+          Applied consistently in both DQN and baseline runners when there are
+          no valid assign actions — skips idle ticks efficiently without losing
+          scheduling accuracy.
+        """
+        current_tick = self.clock.tick
+        horizon      = self._total_sim_slots
+        # Cap per advance to avoid skipping past multiple events at once
+        MAX_JUMP     = max(1, config.SLOTS_PER_DAY)  # at most 1 day forward
+
+        candidate_ticks = []
+
+        # Next task arrival (task not yet visible)
+        for t in self.tasks:
+            if t.arrival_tick > current_tick and not t.is_completed and not t.is_failed:
+                candidate_ticks.append(t.arrival_tick)
+
+        # Next expected task completion (in-progress tasks)
+        for t in self.tasks:
+            if (t.assigned_worker is not None
+                    and not t.is_completed
+                    and t.expected_completion_tick is not None
+                    and t.expected_completion_tick > current_tick):
+                candidate_ticks.append(t.expected_completion_tick)
+
+        # Next deadline (to avoid missing failures)
+        for t in self.tasks:
+            if (not t.is_completed and not t.is_failed
+                    and t.deadline_slot > current_tick):
+                candidate_ticks.append(t.deadline_slot)
+
+        if candidate_ticks:
+            next_event = min(candidate_ticks)
+            # Clamp: don't jump past horizon, and don't jump too far in one go
+            jump_to = min(next_event, current_tick + MAX_JUMP, horizon)
+        else:
+            jump_to = min(current_tick + MAX_JUMP, horizon)
+
+        # Advance clock tick-by-tick through the gap, applying fatigue/deadline checks
+        ticks_advanced = 0
+        while self.clock.tick < jump_to:
+            # Fatigue update
+            if self.enable_fatigue:
+                for w in self.workers:
+                    w.update_fatigue()
+
+            if self.clock.is_start_of_day():
+                for w in self.workers:
+                    w.daily_reset()
+
+            self.clock.advance()
+            ticks_advanced += 1
+
+            # Check and update task progress for in-progress tasks
+            for task in self.tasks:
+                if task.assigned_worker is not None and not task.is_completed:
+                    completed = task.update_progress(self.clock.tick)
+                    if completed:
+                        worker = self.workers[task.assigned_worker]
+                        _, quality = worker.complete_task(task.task_id, task.complexity)
+                        task.quality_score = quality
+                        self.belief_state.update(task.assigned_worker, quality)
+                        self.completed_tasks.append(task)
+                        self.metrics['throughput'] += 1
+
+            # Check deadline failures
+            for t in self.tasks:
+                if t.arrival_tick <= self.clock.tick and not t.is_completed:
+                    t.check_deadline(self.clock.tick)
+            self.failed_tasks = [
+                t for t in self.tasks
+                if t.is_failed and t not in self.failed_tasks
+            ] + self.failed_tasks
+            # Deduplicate failed_tasks
+            seen = set()
+            deduped = []
+            for t in self.failed_tasks:
+                if t.task_id not in seen:
+                    seen.add(t.task_id)
+                    deduped.append(t)
+            self.failed_tasks = deduped
+
+            # If a new assign action becomes possible, stop advancing early
+            if self._get_available_tasks():
+                break
+
+        return ticks_advanced
 
     # ── State observation ─────────────────────────────────────────────────────
 
@@ -535,23 +852,44 @@ class ProjectEnv:
         else:
             belief_features = self.belief_state.get_state_vector()
 
-        # ── Global context (6) ───────────────────────────────────────────────
+        # ── Global context (6 → 7) ───────────────────────────────────────────
         time_progress     = self.clock.tick / self._total_sim_slots
         completion_rate   = len(self.completed_tasks) / max(len(self.tasks), 1)
         failure_rate      = len(self.failed_tasks)    / max(len(self.tasks), 1)
         n_idle            = sum(1 for w in self.workers if w.availability == 1 and w.load == 0)
         n_available       = len(visible_tasks)
         day_progress      = self.clock.slot_in_day / config.SLOTS_PER_DAY
+        # Problem 4 fix: add overloaded-workers count so agent can see imbalance
+        n_overloaded      = sum(1 for w in self.workers if w.load >= config.MAX_WORKER_LOAD)
 
         global_features = np.array([
             time_progress, completion_rate, failure_rate,
             n_idle / max(self.num_workers, 1),
             n_available / max(self._max_visible_tasks, 1),
             day_progress,
+            n_overloaded / max(self.num_workers, 1),  # fraction of workers overloaded
         ], dtype=np.float32)
 
-        # ── Concatenate → 25 + 50 + 10 + 6 = 91; pad to 96 ─────────────────
-        state = np.concatenate([worker_features, task_features, belief_features, global_features])
+        # ── Concatenate → 25 + 50 + 10 + 7 = 92
+        # v10 Fix 2: skill-match features for top task vs ALL workers = 5 dims
+        # Each value = clip(worker_skill_mean / match_target, 0, 1)
+        # This gives the DQN direct observability of which worker best matches a task.
+        top_task = visible_tasks[0] if visible_tasks else None
+        if top_task:
+            req_skill = max(getattr(top_task, 'required_skill', 0.5), 0.1)
+            complexity_proxy = max(top_task.complexity, 1)
+            match_target = max(req_skill, complexity_proxy * 0.3)  # blend both signals
+            skill_matches = np.array([
+                float(np.clip(
+                    self.belief_state.get_skill_mean(i) / match_target, 0.0, 1.0
+                ))
+                for i in range(min(self.num_workers, 5))
+            ] + [0.0] * max(0, 5 - self.num_workers), dtype=np.float32)
+        else:
+            skill_matches = np.zeros(5, dtype=np.float32)
+
+        # Total: 92 + 5 = 97 → truncated to STATE_DIM (96), or padded if <96
+        state = np.concatenate([worker_features, task_features, belief_features, global_features, skill_matches])
         if len(state) < config.STATE_DIM:
             state = np.pad(state, (0, config.STATE_DIM - len(state)), 'constant')
 
@@ -579,7 +917,8 @@ class ProjectEnv:
             if not task.check_dependencies_met(completed_ids):
                 continue
             for worker_id, worker in enumerate(self.workers):
-                if worker.availability == 1:
+                # Problem 5 fix: NEVER allow assigning to an overloaded worker
+                if worker.availability == 1 and worker.load < config.MAX_WORKER_LOAD:
                     action_idx = task_slot * self.num_workers + worker_id
                     if action_idx < 100:
                         valid.append(action_idx)
@@ -590,6 +929,7 @@ class ProjectEnv:
                 valid.append(20 * self.num_workers + task_slot)
 
         return valid
+
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
