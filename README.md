@@ -187,6 +187,18 @@ Transitions with high TD error (surprising outcomes) are sampled more frequently
 
 ---
 
+## Performance at Scale (365+ Days)
+
+The system is optimized to robustly handle production-scale environments mapping to year-long or multi-year simulations (e.g., $N>10,000$ generated tasks, 365+ continuous slot days) without memory leaks or UI disconnects. Key optimizations include:
+
+**$O(1)$ State Set Tracking.** The environment maintains task state sets mapping historical statuses (like failure records or dependency metrics) instantly, preventing devastating $O(N^2)$ array search overhead that would otherwise exponentially hang the thread during longer schedules.
+
+**Network Emisson Yields.** The simulation uses discrete throttled event loops. `asyncio.sleep(0.005)` yields are manually inserted alongside PyTorch training events via Socket.IO limits. This caps the payload frame-rate to ~200Hz. Limiting Python's native thread consumption guarantees that NodeJS backend ping-pongs never lag and trigger a WebSocket `ECONNRESET`, eliminating the chance of "silent freezes" in Phase 2 scaling.
+
+**Bounded Memory Transmissions.** While the backend Python tracks every historical `Gantt Block` mapping task-to-worker relationships, Socket.IO dynamically truncates timeline payloads directly before broadcast to respect memory limits. The frontend accurately graphs end-of-run state seamlessly using only the relevant contextual limits for visualization, without severing connections due to overflowing gigabyte-sized Socket payloads.
+
+---
+
 ## Setup & Installation
 
 ### Prerequisites

@@ -19,12 +19,18 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@tsparticles/react": "^3.0.0",
+    "@tsparticles/slim": "^3.9.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "framer-motion": "^12.35.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",
     "recharts": "^3.7.0",
     "socket.io-client": "^4.8.3",
+    "tsparticles": "^3.9.1",
     "zustand": "^5.0.11"
   }
 }

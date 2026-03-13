@@ -252,7 +252,13 @@ class DQNAgent:
         lr = learning_rate if learning_rate is not None else config.LEARNING_RATE
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr, eps=1e-5)
         t0 = lr_scheduler_t0 or getattr(config, 'LR_SCHEDULER_T0', 2000)
-        self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=t0)
+        # v12 fix: add eta_min to prevent Q-value collapse from LR decaying to near-zero
+        eta_min_frac = getattr(config, 'LR_SCHEDULER_ETA_MIN_FRACTION', 0.15)
+        eta_min = max(lr * eta_min_frac, 1e-5)
+        self.scheduler = CosineAnnealingWarmRestarts(
+            self.optimizer, T_0=t0, T_mult=getattr(config, 'LR_SCHEDULER_T_MULT', 1),
+            eta_min=eta_min
+        )
 
         # ── Loss ─────────────────────────────────────────────────────────────
         self.criterion = nn.SmoothL1Loss(reduction='none')

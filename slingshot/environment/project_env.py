@@ -136,6 +136,7 @@ class ProjectEnv:
         self._episode_reward_breakdown = {}
         self._all_completed_makespan  = False
         self._last_completion_milestone = 0.0  # tracks 25/50/75/100% milestones
+        self._failed_task_ids         = set()  # Fast tracking for newly failed tasks
         # Fix 3: overflow drain window state
         self._overflow_ticks   = 0               # ticks elapsed after _total_sim_slots
         self._overflow_started = False            # True once clock > _total_sim_slots
@@ -178,6 +179,7 @@ class ProjectEnv:
 
         self.completed_tasks = []
         self.failed_tasks    = []
+        self._failed_task_ids = set()
         self.belief_state.reset()
         self.clock           = SimClock()
         self.metrics         = self._empty_metrics()
@@ -247,9 +249,6 @@ class ProjectEnv:
             if t.arrival_tick <= self.clock.tick and not t.is_completed:
                 t.check_deadline(self.clock.tick)
 
-        self.failed_tasks = [t for t in self.tasks if t.is_failed
-                             and t not in self.failed_tasks]
-
         # ── Random deadline shock ─────────────────────────────────────────────
         if self.enable_deadline_shocks and np.random.rand() < config.DEADLINE_SHOCK_PROB:
             self._apply_deadline_shock()
@@ -267,10 +266,14 @@ class ProjectEnv:
         delay_penalty    = config.REWARD_DELAY_WEIGHT   # constant nudge
 
         # Rebuild failed_tasks list correctly
-        new_fails = [t for t in self.tasks if t.is_failed and t not in self.failed_tasks]
+        new_fails = []
+        for t in self.tasks:
+            if t.is_failed and t.task_id not in self._failed_task_ids:
+                new_fails.append(t)
+                self._failed_task_ids.add(t.task_id)
+                self.failed_tasks.append(t)
+
         deadline_miss_penalty = len(new_fails) * config.REWARD_DEADLINE_MISS_PENALTY
-        for t in new_fails:
-            self.failed_tasks.append(t)
 
         makespan_bonus = 0.0
         # Terminal makespan bonus: all tasks complete → bonus inversely proportional to time used
@@ -676,6 +679,7 @@ class ProjectEnv:
                         t.is_failed = True
                         t.failure_reason = 'simulation_boundary'
                         self.failed_tasks.append(t)
+                        self._failed_task_ids.add(t.task_id)
                         boundary_count += 1
                 if boundary_count:
                     print(f"  [Termination] Marked {boundary_count} tasks as 'simulation_boundary' "
@@ -756,9 +760,9 @@ class ProjectEnv:
         if candidate_ticks:
             next_event = min(candidate_ticks)
             # Clamp: don't jump past horizon, and don't jump too far in one go
-            jump_to = min(next_event, current_tick + MAX_JUMP, horizon)
+            jump_to = max(current_tick + 1, min(next_event, current_tick + MAX_JUMP, horizon))
         else:
-            jump_to = min(current_tick + MAX_JUMP, horizon)
+            jump_to = max(current_tick + 1, min(current_tick + MAX_JUMP, horizon))
 
         # Advance clock tick-by-tick through the gap, applying fatigue/deadline checks
         ticks_advanced = 0
@@ -791,18 +795,13 @@ class ProjectEnv:
             for t in self.tasks:
                 if t.arrival_tick <= self.clock.tick and not t.is_completed:
                     t.check_deadline(self.clock.tick)
-            self.failed_tasks = [
-                t for t in self.tasks
-                if t.is_failed and t not in self.failed_tasks
-            ] + self.failed_tasks
-            # Deduplicate failed_tasks
-            seen = set()
-            deduped = []
-            for t in self.failed_tasks:
-                if t.task_id not in seen:
-                    seen.add(t.task_id)
-                    deduped.append(t)
-            self.failed_tasks = deduped
+            
+            new_fails = []
+            for t in self.tasks:
+                if t.is_failed and t.task_id not in self._failed_task_ids:
+                    new_fails.append(t)
+                    self._failed_task_ids.add(t.task_id)
+                    self.failed_tasks.append(t)
 
             # If a new assign action becomes possible, stop advancing early
             if self._get_available_tasks():

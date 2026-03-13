@@ -252,15 +252,15 @@ def generate_poisson_arrivals(
     else:
         rng = np.random.default_rng()
 
-    task_cap             = total_tasks or config.TOTAL_TASKS
+    task_cap             = int(total_tasks or config.TOTAL_TASKS)
     arrival_rate_per_day = arrival_rate_per_day or config.TASK_ARRIVAL_RATE
-    total_slots          = total_slots or (config.TOTAL_SIM_DAYS * config.SLOTS_PER_DAY)
+    total_slots          = int(total_slots or (config.TOTAL_SIM_DAYS * config.SLOTS_PER_DAY))
 
     # v10 FIX: Use task_cap directly as the maximum generation target.
     # Generate 2× intervals to handle Poisson variance — many will land past
     # the simulation horizon and get dropped (line 288 break), so we need
     # headroom in the generation buffer.
-    generation_buffer = max(10, task_cap * 2)
+    generation_buffer = int(max(10, task_cap * 2))
 
     # Rate per slot = tasks_per_day / slots_per_day
     rate_per_slot = arrival_rate_per_day / config.SLOTS_PER_DAY

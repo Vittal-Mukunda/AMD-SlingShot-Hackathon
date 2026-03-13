@@ -59,8 +59,8 @@ class SimConfig(BaseModel):
     # Legacy phase durations (kept for backward-compat)
     days_phase1: int = 60
     days_phase2: int = 40
-    # v9: Phase 1/2 split fraction (0.40–0.80; default 0.60 = 60% baseline observation)
-    phase1_fraction: float = 0.60
+    # v9: Phase 1/2 split fraction (0.40–0.80; default 0.55 = 55% baseline observation)
+    phase1_fraction: float = 0.55
     # Worker config
     worker_mode: str = "auto"        # "auto" | "manual"
     worker_seed: int = 42

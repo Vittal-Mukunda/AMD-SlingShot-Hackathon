@@ -25,6 +25,7 @@ export interface QueueItem {
     duration_slots: number;
     required_skill: number;
     deadline_tick: number;
+    arrival_tick?: number;
     slots_remaining: number;
 }
 
